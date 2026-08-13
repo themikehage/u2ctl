@@ -39,7 +39,7 @@ def compute_screen_fingerprint(elements: List[ActionElement]) -> str:
     return hashlib.sha256(repr_str.encode("utf-8")).hexdigest()[:16]
 
 
-def parse_xml_dump(xml_content: str, include_system_bars: bool = False) -> List[ActionElement]:
+def parse_xml_dump(xml_content: str, include_system_bars: bool = False, include_containers: bool = False) -> List[ActionElement]:
     """Parse hierarchy XML and filter actionable elements (BUILDSPEC G3)."""
     elements = []
     if not xml_content:
@@ -52,12 +52,16 @@ def parse_xml_dump(xml_content: str, include_system_bars: bool = False) -> List[
 
     index_counter = 0
     for elem in root.iter():
+        if elem.tag == "hierarchy":
+            continue
         attrib = elem.attrib
         res_id = attrib.get("resource-id", "")
         text = attrib.get("text", "")
         desc = attrib.get("content-desc", "")
         cls_name = attrib.get("class", "")
         bounds = attrib.get("bounds", "")
+        if not bounds:
+            continue
 
         clickable = attrib.get("clickable", "false").lower() == "true"
         scrollable = attrib.get("scrollable", "false").lower() == "true"
@@ -79,9 +83,10 @@ def parse_xml_dump(xml_content: str, include_system_bars: bool = False) -> List[
             or editable
             or (cls_name in ACTIONABLE_CLASSES)
             or (len(text) > 0 and len(text) <= 200)
+            or (len(desc) > 0 and len(desc) <= 200)
         )
 
-        if is_actionable:
+        if is_actionable or include_containers:
             elements.append(
                 ActionElement(
                     index=index_counter,
@@ -93,7 +98,6 @@ def parse_xml_dump(xml_content: str, include_system_bars: bool = False) -> List[
                     clickable=clickable,
                     scrollable=scrollable,
                     focused=focused,
-                    visible_to_selector_engine=True,
                 )
             )
             index_counter += 1
@@ -135,13 +139,14 @@ def ui_dump_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]
     limit = args.get("limit", 30)
     raw = args.get("raw", False)
     include_system_bars = args.get("include_system_bars", False)
+    include_containers = args.get("include_containers", False)
 
     xml_content = d.dump_hierarchy()
 
     if raw:
         return {"raw_xml": xml_content}
 
-    elements = parse_xml_dump(xml_content, include_system_bars=include_system_bars)
+    elements = parse_xml_dump(xml_content, include_system_bars=include_system_bars, include_containers=include_containers)
     fingerprint = compute_screen_fingerprint(elements)
 
     out_elements = elements if limit == 0 else elements[:limit]
@@ -162,6 +167,7 @@ def ui_tap_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
 
     xml_content = d.dump_hierarchy()
     elements = parse_xml_dump(xml_content, include_system_bars=True)
+    pre_fingerprint = compute_screen_fingerprint(elements)
 
     target_elem, warnings = resolve_selector(elements, selector)
     for w in warnings:
@@ -176,21 +182,79 @@ def ui_tap_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
         # Fallback click via u2 selector
         if "text" in selector:
             d(text=selector["text"]).click()
+        elif "text_contains" in selector:
+            d(textContains=selector["text_contains"]).click()
         elif "resource_id" in selector:
             d(resourceId=selector["resource_id"]).click()
+        elif "description" in selector:
+            d(description=selector["description"]).click()
+        elif "desc_contains" in selector:
+            d(descriptionContains=selector["desc_contains"]).click()
 
     time.sleep(0.5)
 
     # Postcondition check (G6)
     post_xml = d.dump_hierarchy()
     post_elements = parse_xml_dump(post_xml, include_system_bars=True)
+    post_fingerprint = compute_screen_fingerprint(post_elements)
 
     return {
         "element": target_elem.to_dict(),
         "bounds": target_elem.bounds,
         "postcondition": {
-            "state": "exists",
-            "satisfied": len(post_elements) > 0,
+            "screen_changed": pre_fingerprint != post_fingerprint,
+            "pre_fingerprint": pre_fingerprint,
+            "post_fingerprint": post_fingerprint,
+        },
+    }
+
+
+def ui_long_press_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    selector = parse_selector_args(args)
+    duration = args.get("duration", 1.0)
+    session = DeviceSession(serial=ctx.serial, timeout=ctx.timeout)
+    d = session.u2
+    ctx.serial = session.serial
+
+    xml_content = d.dump_hierarchy()
+    elements = parse_xml_dump(xml_content, include_system_bars=True)
+    pre_fingerprint = compute_screen_fingerprint(elements)
+
+    target_elem, warnings = resolve_selector(elements, selector)
+    for w in warnings:
+        ctx.warn(w)
+
+    bounds = parse_bounds_rect(target_elem.bounds)
+    if bounds:
+        cx = (bounds[0] + bounds[2]) // 2
+        cy = (bounds[1] + bounds[3]) // 2
+        d.long_click(cx, cy, duration=duration)
+    else:
+        if "text" in selector:
+            d(text=selector["text"]).long_click(duration=duration)
+        elif "text_contains" in selector:
+            d(textContains=selector["text_contains"]).long_click(duration=duration)
+        elif "resource_id" in selector:
+            d(resourceId=selector["resource_id"]).long_click(duration=duration)
+        elif "description" in selector:
+            d(description=selector["description"]).long_click(duration=duration)
+        elif "desc_contains" in selector:
+            d(descriptionContains=selector["desc_contains"]).long_click(duration=duration)
+
+    time.sleep(0.5)
+
+    post_xml = d.dump_hierarchy()
+    post_elements = parse_xml_dump(post_xml, include_system_bars=True)
+    post_fingerprint = compute_screen_fingerprint(post_elements)
+
+    return {
+        "element": target_elem.to_dict(),
+        "bounds": target_elem.bounds,
+        "duration": duration,
+        "postcondition": {
+            "screen_changed": pre_fingerprint != post_fingerprint,
+            "pre_fingerprint": pre_fingerprint,
+            "post_fingerprint": post_fingerprint,
         },
     }
 
@@ -289,6 +353,67 @@ def ui_wait_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]
     raise TimeoutError(f"Wait timed out after {timeout_sec}s for selector {selector}")
 
 
+def ui_find_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    selector = parse_selector_args(args)
+    scroll_direction = args.get("scroll_direction", "down")
+    max_scrolls = min(args.get("max_scrolls", 10), 30)
+    scroll_duration = args.get("scroll_duration", 0.3)
+
+    session = DeviceSession(serial=ctx.serial, timeout=ctx.timeout)
+    d = session.u2
+    ctx.serial = session.serial
+
+    try:
+        w_info = d.window_size()
+        width = w_info[0] if isinstance(w_info, tuple) else w_info.get("width", 1080)
+        height = w_info[1] if isinstance(w_info, tuple) else w_info.get("height", 2340)
+    except Exception:
+        width, height = 1080, 2340
+
+    scrolls_performed = 0
+
+    while True:
+        xml_content = d.dump_hierarchy()
+        elements = parse_xml_dump(xml_content)
+        fingerprint = compute_screen_fingerprint(elements)
+
+        try:
+            target_elem, _ = resolve_selector(elements, selector)
+            return {
+                "found": True,
+                "element": target_elem.to_dict(),
+                "scrolls_performed": scrolls_performed,
+                "screen_fingerprint": fingerprint,
+            }
+        except SelectorNotFoundError:
+            if scrolls_performed >= max_scrolls:
+                return {
+                    "found": False,
+                    "element": None,
+                    "scrolls_performed": scrolls_performed,
+                    "screen_fingerprint": fingerprint,
+                }
+
+            if scroll_direction == "down":
+                fx, fy = width // 2, int(height * 0.75)
+                tx, ty = width // 2, int(height * 0.25)
+            elif scroll_direction == "up":
+                fx, fy = width // 2, int(height * 0.25)
+                tx, ty = width // 2, int(height * 0.75)
+            elif scroll_direction == "left":
+                fx, fy = int(width * 0.85), height // 2
+                tx, ty = int(width * 0.15), height // 2
+            elif scroll_direction == "right":
+                fx, fy = int(width * 0.15), height // 2
+                tx, ty = int(width * 0.85), height // 2
+            else:
+                raise UsageError(f"Invalid scroll_direction: '{scroll_direction}'")
+
+            d.swipe(fx, fy, tx, ty, duration=scroll_duration)
+            scrolls_performed += 1
+            time.sleep(0.5)
+
+
 UI_DOMAIN = DomainSpec(
     name="ui",
     description="UI hierarchy inspection, element interaction, and gesture commands",
@@ -302,6 +427,7 @@ UI_DOMAIN = DomainSpec(
                 "properties": {
                     "limit": {"type": "integer", "description": "Max elements to return (0 for all, default 30)"},
                     "include_system_bars": {"type": "boolean", "description": "Include status and navigation bars"},
+                    "include_containers": {"type": "boolean", "description": "Include non-actionable container elements"},
                     "raw": {"type": "boolean", "description": "Return raw XML without filtering"},
                     "filter": {"type": "string", "enum": ["actionable"], "description": "Element filter; only 'actionable' (default behavior)"},
                 },
@@ -329,8 +455,10 @@ UI_DOMAIN = DomainSpec(
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "Exact visible text"},
+                    "text_contains": {"type": "string", "description": "Case-insensitive substring match on visible text"},
                     "resource_id": {"type": "string", "description": "Resource ID"},
                     "description": {"type": "string", "description": "Accessibility description"},
+                    "desc_contains": {"type": "string", "description": "Case-insensitive substring match on accessibility description"},
                     "bounds": {"type": "string", "description": "Bounds format 'X1,Y1-X2,Y2'"},
                 },
                 "additionalProperties": False,
@@ -345,6 +473,38 @@ UI_DOMAIN = DomainSpec(
                 },
             },
             handler=ui_tap_handler,
+            safety="interactive",
+            idempotent=False,
+            expect={"element": {}, "state": "exists"},
+        ),
+        ToolSpec(
+            name="ui.long_press",
+            domain="ui",
+            description="Long-press one visible UI element matched by selector.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Exact visible text"},
+                    "text_contains": {"type": "string", "description": "Case-insensitive substring match on visible text"},
+                    "resource_id": {"type": "string", "description": "Resource ID"},
+                    "description": {"type": "string", "description": "Accessibility description"},
+                    "desc_contains": {"type": "string", "description": "Case-insensitive substring match on accessibility description"},
+                    "bounds": {"type": "string", "description": "Bounds format 'X1,Y1-X2,Y2'"},
+                    "duration": {"type": "number", "description": "Press duration in seconds (default 1.0)"},
+                },
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "required": ["element", "bounds"],
+                "properties": {
+                    "element": {"type": "object"},
+                    "bounds": {"type": "string"},
+                    "duration": {"type": "number"},
+                    "postcondition": {"type": "object"},
+                },
+            },
+            handler=ui_long_press_handler,
             safety="interactive",
             idempotent=False,
             expect={"element": {}, "state": "exists"},
@@ -437,8 +597,10 @@ UI_DOMAIN = DomainSpec(
                 "type": "object",
                 "properties": {
                     "text": {"type": "string"},
+                    "text_contains": {"type": "string"},
                     "resource_id": {"type": "string"},
                     "description": {"type": "string"},
+                    "desc_contains": {"type": "string"},
                     "bounds": {"type": "string"},
                     "timeout": {"type": "integer", "description": "Timeout in seconds (max 120)"},
                     "absent": {"type": "boolean", "description": "Wait for element to disappear"},
@@ -455,6 +617,38 @@ UI_DOMAIN = DomainSpec(
                 },
             },
             handler=ui_wait_handler,
+            safety="read",
+        ),
+        ToolSpec(
+            name="ui.find",
+            domain="ui",
+            description="Scroll repeatedly until selector element is found or max scrolls reached.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Exact visible text"},
+                    "text_contains": {"type": "string", "description": "Case-insensitive substring match on visible text"},
+                    "resource_id": {"type": "string", "description": "Resource ID"},
+                    "description": {"type": "string", "description": "Accessibility description"},
+                    "desc_contains": {"type": "string", "description": "Case-insensitive substring match on accessibility description"},
+                    "bounds": {"type": "string", "description": "Bounds format 'X1,Y1-X2,Y2'"},
+                    "scroll_direction": {"type": "string", "enum": ["down", "up", "left", "right"], "description": "Scroll direction (default 'down')"},
+                    "max_scrolls": {"type": "integer", "description": "Maximum number of scroll swipes (default 10, max 30)"},
+                    "scroll_duration": {"type": "number", "description": "Swipe gesture duration in seconds (default 0.3)"},
+                },
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "required": ["found", "scrolls_performed", "screen_fingerprint"],
+                "properties": {
+                    "found": {"type": "boolean"},
+                    "element": {"type": ["object", "null"]},
+                    "scrolls_performed": {"type": "integer"},
+                    "screen_fingerprint": {"type": "string"},
+                },
+            },
+            handler=ui_find_handler,
             safety="read",
         ),
     ],
