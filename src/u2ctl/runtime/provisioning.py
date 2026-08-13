@@ -105,6 +105,18 @@ def install_setup(
     return SetupReport(status="ready", steps=steps)
 
 
+DIAGNOSE_PROP_KEYS = {
+    "ro.build.version.sdk",
+    "ro.build.version.release",
+    "ro.product.model",
+    "ro.product.manufacturer",
+    "ro.build.fingerprint",
+    "ro.debuggable",
+    "service.adb.tcp.port",
+    "persist.sys.usb.config",
+}
+
+
 def diagnose_setup(serial: Optional[str] = None, adb_path: Optional[str] = None) -> Dict[str, Any]:
     """Collect diagnostic facts without repairing state."""
     target, _ = select_target_device(serial, adb_path)
@@ -117,10 +129,12 @@ def diagnose_setup(serial: Optional[str] = None, adb_path: Optional[str] = None)
     try:
         res = subprocess.run([path, "-s", target.serial, "shell", "getprop"], capture_output=True, text=True, check=True)
         props = {}
-        for l in res.stdout.splitlines()[:30]:
+        for l in res.stdout.splitlines():
             if ":" in l:
                 k, v = l.split(":", 1)
-                props[k.strip("[] ")] = v.strip("[] ")
+                clean_k = k.strip("[] ")
+                if clean_k in DIAGNOSE_PROP_KEYS:
+                    props[clean_k] = v.strip("[] ")
         evidence["props_sample"] = props
     except Exception as e:
         evidence["props_error"] = str(e)
