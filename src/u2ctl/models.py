@@ -27,7 +27,6 @@ class ActionElement:
     clickable: bool
     scrollable: bool
     focused: bool
-    visible_to_selector_engine: bool = True
     duplicates: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -41,7 +40,6 @@ class ActionElement:
             "clickable": self.clickable,
             "scrollable": self.scrollable,
             "focused": self.focused,
-            "visible_to_selector_engine": self.visible_to_selector_engine,
         }
         if self.duplicates > 0:
             d["duplicates"] = self.duplicates

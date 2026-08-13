@@ -42,7 +42,7 @@ def resolve_selector(
     warnings: List[str] = []
     matched: List[ActionElement] = []
 
-    # Priority matching: resource_id > description > text > bounds
+    # Priority matching: resource_id > description > text > desc_contains > text_contains > bounds
     if "resource_id" in selector:
         rid = selector["resource_id"]
         matched = [e for e in elements if e.resource_id == rid or e.resource_id.endswith(f":id/{rid}")]
@@ -52,6 +52,12 @@ def resolve_selector(
     elif "text" in selector:
         txt = selector["text"]
         matched = [e for e in elements if e.text == txt]
+    elif "desc_contains" in selector:
+        sub = selector["desc_contains"].lower()
+        matched = [e for e in elements if sub in e.content_desc.lower()]
+    elif "text_contains" in selector:
+        sub = selector["text_contains"].lower()
+        matched = [e for e in elements if sub in e.text.lower()]
     elif "bounds" in selector:
         req_b = selector["bounds"]  # [x1, y1, x2, y2]
         matched = []
@@ -59,6 +65,14 @@ def resolve_selector(
             b = parse_bounds_rect(e.bounds)
             if b and rect_overlap_ratio((req_b[0], req_b[1], req_b[2], req_b[3]), b) >= 0.9:
                 matched.append(e)
+
+        def _get_area(elem: ActionElement) -> int:
+            b = parse_bounds_rect(elem.bounds)
+            if not b:
+                return 2**62
+            return (b[2] - b[0]) * (b[3] - b[1])
+
+        matched.sort(key=_get_area)
 
     if not matched:
         raise SelectorNotFoundError(
