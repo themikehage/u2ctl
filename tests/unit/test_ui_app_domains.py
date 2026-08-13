@@ -45,7 +45,6 @@ def test_parse_selector_args_all_forms():
 
 def test_parse_xml_dump_dedup_and_system_bars():
     elements = parse_xml_dump(SAMPLE_XML, include_system_bars=False)
-    # 2 distinct + 1 deduped (DupText counted once with duplicates=1)
     assert len(elements) == 3
     dup_elem = [e for e in elements if e.text == "DupText"][0]
     assert dup_elem.duplicates == 1
@@ -81,6 +80,41 @@ def test_resolve_selector_strict_mode_and_ambiguity():
         resolve_selector(matched_elements, {"text": "Same"}, strict_selector=True)
 
 
+def test_rect_overlap_ratio():
+    r1 = (0, 0, 100, 100)
+    r2 = (0, 0, 100, 100)
+    assert rect_overlap_ratio(r1, r2) == 1.0
+
+
+def test_app_current_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+
+    mock_u2 = MagicMock()
+    mock_u2.app_current.return_value = {"package": "com.android.settings", "activity": ".Settings"}
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["app", "current", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["package"] == "com.android.settings"
+
+
+def test_app_start_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.app_current.return_value = {"package": "com.android.settings"}
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["app", "start", "--package", "com.android.settings", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["package"] == "com.android.settings"
+
+
 def test_app_stop_handler(invoke_cli, monkeypatch):
     target = DeviceInfo(serial="dev1", state="device")
     monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
@@ -95,6 +129,83 @@ def test_app_stop_handler(invoke_cli, monkeypatch):
     data = json.loads(stdout)
     assert data["result"]["stopped"] is True
     assert mock_u2.app_stop.called
+
+
+def test_ui_dump_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "dump", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert "screen_fingerprint" in data["result"]
+    assert len(data["result"]["elements"]) == 3
+
+
+def test_ui_tap_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "tap", "--text", "Battery", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["element"]["text"] == "Battery"
+    assert mock_u2.click.called
+
+
+def test_ui_input_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "input", "--text", "Hello World 123", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["text_typed"] == "Hello World 123"
+    assert mock_u2.send_keys.called
+
+
+def test_ui_swipe_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "swipe", "--from-pos", "500,1000", "--to-pos", "500,200", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["swiped"] is True
+
+
+def test_ui_press_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "press", "--key", "home", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["key"] == "home"
+    assert mock_u2.press.called
 
 
 def test_ui_wait_absent_and_timeout(invoke_cli, monkeypatch):
