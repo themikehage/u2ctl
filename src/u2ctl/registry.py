@@ -134,7 +134,7 @@ class Registry:
             tool_subparsers.required = False
 
             for tool in domain.tools:
-                tool_subcommand = tool.name.split(".", 1)[1]
+                tool_subcommand = tool.name.split(".", 1)[1].replace("_", "-")
                 t_parser = tool_subparsers.add_parser(tool_subcommand, help=tool.description, parents=parents)
 
                 # Generate args from input_schema

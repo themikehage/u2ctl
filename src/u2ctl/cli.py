@@ -73,7 +73,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.print_help(sys.stderr)
         return 1
 
-    tool_name = f"{parsed._cli_domain}.{parsed._cli_tool}"
+    tool_subcommand = parsed._cli_tool.replace("-", "_")
+    tool_name = f"{parsed._cli_domain}.{tool_subcommand}"
     spec = registry.get_tool(tool_name)
     if not spec:
         err = UsageError(f"Unknown command: '{tool_name}'")
