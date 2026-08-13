@@ -15,14 +15,16 @@ def build_success_envelope(
     result: Dict[str, Any],
     warnings: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    return {
+    env = {
         "schema_version": SCHEMA_VERSION,
         "ok": True,
         "command": command,
         "device": device or "",
         "result": result,
-        "warnings": warnings or [],
     }
+    if warnings:
+        env["warnings"] = warnings
+    return env
 
 
 def build_error_envelope(

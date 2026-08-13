@@ -103,19 +103,19 @@ u2ctl setup install --serial <SERIAL> --json
 
 ```mermaid
 graph TD
-    A[u2ctl ui dump --filter actionable --json] --> B[Parse actionable elements & screen_fingerprint]
-    B --> C[Select element by text / text-contains / resource_id / desc / desc-contains / bounds]
-    C --> D[Execute action: ui.tap / ui.long-press / ui.input / ui.swipe / ui.press / ui.find]
-    D --> E[Assert returned postcondition screen_changed & new screen_fingerprint]
+    A[u2ctl ui dump --desc-contains '...' --compact --json] --> B[Target element found]
+    B --> C[Execute action with expect: ui.tap --desc-contains '...' --expect-desc-contains '...' --json]
+    C --> D[Verify postcondition.expect_satisfied == true in single call]
 ```
 
-### Key Rules
+### Key Rules & Token Optimizations
 1. **Always pass `--serial <SERIAL>`** when more than one device is connected.
-2. **Prefer semantic selectors**: `text`, `text_contains`, `resource_id`, `description`, or `desc_contains` over raw coordinates. Use substring matching (`--text-contains`, `--desc-contains`) for long localized text.
-3. **Use actionable projection**: `ui dump --filter actionable --limit 30` returns pre-filtered interactive elements. Pass `--include-containers` if full non-actionable hierarchy is needed.
-4. **Use `ui.find` for scrolling navigation**: Use `u2ctl ui find --text-contains "..." --scroll-direction down` to scroll automatically until target element appears.
-5. **Disambiguate matches**: If a selector produces `SELECTOR_MATCHED_MULTIPLE` warning, specify `--bounds "X1,Y1-X2,Y2"`.
-6. **Verify postconditions**: Check `result.postcondition.screen_changed` and compare `screen_fingerprint` across screen transitions.
+2. **Combine Action + Verification in 1 Call (HIGH EFFICIENCY)**: Pass `--expect-desc-contains "..."`, `--expect-text-contains "..."`, or `--expect-element-absent` to `ui.tap` / `ui.long-press`. The command performs the post-dump internally and returns `result.postcondition.expect_satisfied: true/false`, eliminating extra dump round-trips.
+3. **Use Server-Side Dumping Filters**: `u2ctl ui dump --desc-contains "Me gusta" --compact --json` filters elements on device before returning, returning 1-2 elements instead of 70+.
+4. **Use Compact Dump Mode**: Pass `--compact` to `ui dump` to omit `false` boolean fields (`focused`, `scrollable`), reducing JSON size by ~40%.
+5. **Prefer Substring Selectors**: Use `--desc-contains` or `--text-contains` for long, localized UI text (e.g. `Botón "Me gusta". Toca dos veces...`) to avoid exact string extraction or UTF-8 mangling.
+6. **Use `ui.find` for Scrolling Navigation**: Use `u2ctl ui find --text-contains "..." --scroll-direction down` to scroll automatically until target element appears.
+7. **Disambiguate Matches**: If a selector produces `SELECTOR_MATCHED_MULTIPLE` warning, specify `--bounds "X1,Y1-X2,Y2"`.
 
 ---
 

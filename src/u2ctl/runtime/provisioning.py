@@ -110,10 +110,8 @@ DIAGNOSE_PROP_KEYS = {
     "ro.build.version.release",
     "ro.product.model",
     "ro.product.manufacturer",
-    "ro.build.fingerprint",
     "ro.debuggable",
     "service.adb.tcp.port",
-    "persist.sys.usb.config",
 }
 
 

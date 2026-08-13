@@ -27,6 +27,17 @@ def test_action_element_to_dict():
     assert d["duplicates"] == 2
 
 
+def test_build_success_envelope_warnings():
+    from u2ctl.output import build_success_envelope
+    # Empty warnings -> no warnings key in envelope (R4 partial)
+    env1 = build_success_envelope("test.cmd", "dev1", {"ok": True}, warnings=[])
+    assert "warnings" not in env1
+
+    # Non-empty warnings -> warnings key included
+    env2 = build_success_envelope("test.cmd", "dev1", {"ok": True}, warnings=["warn1"])
+    assert env2["warnings"] == ["warn1"]
+
+
 def test_print_output_human_error(capsys):
     from u2ctl.errors import UsageError
     print_output("test.cmd", "dev1", error=UsageError("Human error msg"), json_mode=False)

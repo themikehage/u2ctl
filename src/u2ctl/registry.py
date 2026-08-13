@@ -13,6 +13,7 @@ class HandlerContext:
     device: Any = None
     serial: str = ""
     timeout: int = 30
+    debug: bool = False
     warnings: List[str] = field(default_factory=list)
     client: Any = None
 

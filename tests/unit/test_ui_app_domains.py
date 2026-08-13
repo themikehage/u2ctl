@@ -308,13 +308,82 @@ def test_ui_tap_postcondition_includes_fingerprint_transition(invoke_cli, monkey
     mock_u2.dump_hierarchy.return_value = SAMPLE_XML
     monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
 
+    # Without --debug flag: fingerprints omitted by default (R7)
     code, stdout, stderr = invoke_cli(["ui", "tap", "--text", "Battery", "--json"])
     assert code == 0
     data = json.loads(stdout)
     postcond = data["result"]["postcondition"]
     assert "screen_changed" in postcond
-    assert "pre_fingerprint" in postcond
-    assert "post_fingerprint" in postcond
+    assert "pre_fingerprint" not in postcond
+    assert "post_fingerprint" not in postcond
+
+    # With --debug flag: fingerprints included
+    code_dbg, stdout_dbg, _ = invoke_cli(["ui", "tap", "--text", "Battery", "--debug", "--json"])
+    assert code_dbg == 0
+    data_dbg = json.loads(stdout_dbg)
+    postcond_dbg = data_dbg["result"]["postcondition"]
+    assert "screen_changed" in postcond_dbg
+    assert "pre_fingerprint" in postcond_dbg
+    assert "post_fingerprint" in postcond_dbg
+
+
+def test_ui_tap_expect_postcondition(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    # Expect satisfied
+    code, stdout, _ = invoke_cli(["ui", "tap", "--text", "Battery", "--expect-text-contains", "Wi-Fi", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    postcond = data["result"]["postcondition"]
+    assert postcond["expect_satisfied"] is True
+    assert postcond["matched_element"]["text"] == "Wi-Fi"
+
+    # Expect not satisfied (exit code 0, expect_satisfied False)
+    code_f, stdout_f, _ = invoke_cli(["ui", "tap", "--text", "Battery", "--expect-text-contains", "NonExistent", "--json"])
+    assert code_f == 0
+    data_f = json.loads(stdout_f)
+    postcond_f = data_f["result"]["postcondition"]
+    assert postcond_f["expect_satisfied"] is False
+    assert "matched_element" not in postcond_f
+
+    # Expect element absent
+    code_a, stdout_a, _ = invoke_cli(["ui", "tap", "--text", "Battery", "--expect-text-contains", "NonExistent", "--expect-element-absent", "--json"])
+    assert code_a == 0
+    data_a = json.loads(stdout_a)
+    postcond_a = data_a["result"]["postcondition"]
+    assert postcond_a["expect_satisfied"] is True
+
+
+def test_ui_dump_server_side_filter_and_compact(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    # Filter text_contains
+    code, stdout, _ = invoke_cli(["ui", "dump", "--text-contains", "Wi-Fi", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["matched"] == 1
+    assert len(data["result"]["elements"]) == 1
+    assert data["result"]["elements"][0]["text"] == "Wi-Fi"
+
+    # Compact mode
+    code_c, stdout_c, _ = invoke_cli(["ui", "dump", "--text-contains", "Battery", "--compact", "--json"])
+    assert code_c == 0
+    data_c = json.loads(stdout_c)
+    elem = data_c["result"]["elements"][0]
+    assert elem["text"] == "Battery"
+    assert "focused" not in elem  # focused is False, omitted in compact mode
+    assert "scrollable" not in elem  # scrollable is False, omitted in compact mode
 
 
 def test_ui_long_press_handler(invoke_cli, monkeypatch):

@@ -45,6 +45,23 @@ class ActionElement:
             d["duplicates"] = self.duplicates
         return d
 
+    def to_compact_dict(self) -> Dict[str, Any]:
+        d = {
+            "index": self.index,
+            "text": self.text,
+            "resourceId": self.resource_id,
+            "contentDesc": self.content_desc,
+            "bounds": self.bounds,
+            "clickable": self.clickable,
+        }
+        if self.scrollable:
+            d["scrollable"] = True
+        if self.focused:
+            d["focused"] = True
+        if self.duplicates > 0:
+            d["duplicates"] = self.duplicates
+        return d
+
 
 @dataclass
 class SetupStepReport:

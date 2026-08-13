@@ -53,6 +53,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parent_parser.add_argument("--dry-run", action="store_true", help="Print envelope without executing action")
     parent_parser.add_argument("--strict-selector", action="store_true", help="Fail on ambiguous selector matches")
     parent_parser.add_argument("--yes", action="store_true", help="Confirm destructive actions explicitly")
+    parent_parser.add_argument("--debug", action="store_true", help="Include verbose debug details in output envelope")
 
     parser = argparse.ArgumentParser(
         prog="u2ctl",
@@ -76,23 +77,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     tool_subcommand = parsed._cli_tool.replace("-", "_")
     tool_name = f"{parsed._cli_domain}.{tool_subcommand}"
     spec = registry.get_tool(tool_name)
-    if not spec:
-        err = UsageError(f"Unknown command: '{tool_name}'")
-        print_output(tool_name, None, error=err, json_mode=parsed.json, quiet=parsed.quiet)
-        return err.exit_code
+    is_json = getattr(parsed, "json", False)
+    is_quiet = getattr(parsed, "quiet", False)
+    is_dry_run = getattr(parsed, "dry_run", False)
+    is_yes = getattr(parsed, "yes", False)
 
     # Extract CLI flags for config resolution
     cli_dict = {
-        "serial": parsed.serial,
-        "timeout": parsed.timeout,
-        "json": parsed.json,
-        "strict_selector": parsed.strict_selector,
+        "serial": getattr(parsed, "serial", None),
+        "timeout": getattr(parsed, "timeout", None),
+        "json": is_json,
+        "strict_selector": getattr(parsed, "strict_selector", False),
     }
 
     try:
         config = resolve_config(cli_dict)
     except U2CtlError as err:
-        print_output(tool_name, None, error=err, json_mode=parsed.json, quiet=parsed.quiet)
+        print_output(tool_name, None, error=err, json_mode=is_json, quiet=is_quiet)
         return err.exit_code
 
     # Guardrail Safety Ceiling Checks (BUILDSPEC G7)
@@ -104,15 +105,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"Action '{tool_name}' requires safety level '{spec.safety}', but environment safety ceiling is set to '{config.safety_ceiling}'",
             hint=f"Unset or raise U2CTL_SAFETY environment variable to at least '{spec.safety}'",
         )
-        print_output(tool_name, config.serial, error=err, json_mode=config.json_output, quiet=parsed.quiet)
+        print_output(tool_name, config.serial, error=err, json_mode=config.json_output, quiet=is_quiet)
         return err.exit_code
 
-    if spec.safety == "destructive" and not parsed.yes:
+    if spec.safety == "destructive" and not is_yes:
         err = UsageError(
             f"Action '{tool_name}' is destructive and requires explicit confirmation '--yes'",
             hint=f"Rerun command with '--yes' flag: u2ctl {parsed._cli_domain} {parsed._cli_tool} --yes",
         )
-        print_output(tool_name, config.serial, error=err, json_mode=config.json_output, quiet=parsed.quiet)
+        print_output(tool_name, config.serial, error=err, json_mode=config.json_output, quiet=is_quiet)
         return err.exit_code
 
     # Extract args passed to the tool subcommand
@@ -123,20 +124,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             subcommand_args[prop] = val
 
     # Audit logging for mutations
-    if spec.safety in {"interactive", "destructive"} and not parsed.dry_run:
+    if spec.safety in {"interactive", "destructive"} and not is_dry_run:
         log_audit(tool_name, config.serial, subcommand_args)
 
     # Dry-run handling
-    if parsed.dry_run and spec.safety in {"interactive", "destructive"}:
+    if is_dry_run and spec.safety in {"interactive", "destructive"}:
         dry_result = {
             "dry_run": True,
             "would_execute": tool_name,
             "args": subcommand_args,
         }
-        print_output(tool_name, config.serial, result=dry_result, json_mode=config.json_output, quiet=parsed.quiet)
+        print_output(tool_name, config.serial, result=dry_result, json_mode=config.json_output, quiet=is_quiet)
         return 0
 
-    ctx = HandlerContext(serial=config.serial or "", timeout=config.timeout)
+    ctx = HandlerContext(serial=config.serial or "", timeout=config.timeout, debug=getattr(parsed, "debug", False))
 
     try:
         # Validate input args against JSON schema
@@ -163,7 +164,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             result=result,
             warnings=ctx.warnings,
             json_mode=config.json_output,
-            quiet=parsed.quiet,
+            quiet=is_quiet,
         )
         return 0
 
@@ -174,7 +175,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             error=err,
             warnings=ctx.warnings,
             json_mode=config.json_output,
-            quiet=parsed.quiet,
+            quiet=is_quiet,
         )
         return err.exit_code
     except Exception as exc:
@@ -185,7 +186,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             error=err,
             warnings=ctx.warnings,
             json_mode=config.json_output,
-            quiet=parsed.quiet,
+            quiet=is_quiet,
         )
         return err.exit_code
 

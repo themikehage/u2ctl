@@ -131,6 +131,42 @@ def parse_xml_dump(xml_content: str, include_system_bars: bool = False, include_
     return deduped
 
 
+def _check_expect(args: Dict[str, Any], post_elements: List[ActionElement]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    expect_desc_contains = args.get("expect_desc_contains")
+    expect_text_contains = args.get("expect_text_contains")
+    expect_element_absent = args.get("expect_element_absent", False)
+
+    if expect_element_absent:
+        sel: Dict[str, Any] = {}
+        if expect_desc_contains:
+            sel["desc_contains"] = expect_desc_contains
+        elif expect_text_contains:
+            sel["text_contains"] = expect_text_contains
+        else:
+            sel = parse_selector_args(args)
+
+        try:
+            matched_elem, _ = resolve_selector(post_elements, sel)
+            return False, matched_elem.to_dict()
+        except SelectorNotFoundError:
+            return True, None
+
+    sel = {}
+    if expect_desc_contains:
+        sel["desc_contains"] = expect_desc_contains
+    elif expect_text_contains:
+        sel["text_contains"] = expect_text_contains
+
+    if not sel:
+        return True, None
+
+    try:
+        matched_elem, _ = resolve_selector(post_elements, sel)
+        return True, matched_elem.to_dict()
+    except SelectorNotFoundError:
+        return False, None
+
+
 def ui_dump_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
     session = DeviceSession(serial=ctx.serial, timeout=ctx.timeout)
     d = session.u2
@@ -140,6 +176,7 @@ def ui_dump_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]
     raw = args.get("raw", False)
     include_system_bars = args.get("include_system_bars", False)
     include_containers = args.get("include_containers", False)
+    compact = args.get("compact", False)
 
     xml_content = d.dump_hierarchy()
 
@@ -149,14 +186,38 @@ def ui_dump_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]
     elements = parse_xml_dump(xml_content, include_system_bars=include_system_bars, include_containers=include_containers)
     fingerprint = compute_screen_fingerprint(elements)
 
-    out_elements = elements if limit == 0 else elements[:limit]
+    text_contains = args.get("text_contains")
+    desc_contains = args.get("desc_contains")
+    resource_id = args.get("resource_id")
 
-    return {
+    filtered_elements = elements
+    has_filter = (text_contains is not None) or (desc_contains is not None) or (resource_id is not None)
+
+    if has_filter:
+        matched_elems = []
+        for e in elements:
+            if resource_id and not (e.resource_id == resource_id or e.resource_id.endswith(f":id/{resource_id}")):
+                continue
+            if desc_contains and desc_contains.lower() not in e.content_desc.lower():
+                continue
+            if text_contains and text_contains.lower() not in e.text.lower():
+                continue
+            matched_elems.append(e)
+        filtered_elements = matched_elems
+
+    out_elements = filtered_elements if limit == 0 else filtered_elements[:limit]
+    elem_dicts = [e.to_compact_dict() if compact else e.to_dict() for e in out_elements]
+
+    res = {
         "screen_fingerprint": fingerprint,
         "total_actionable": len(elements),
         "limit": limit,
-        "elements": [e.to_dict() for e in out_elements],
+        "elements": elem_dicts,
     }
+    if has_filter:
+        res["matched"] = len(filtered_elements)
+
+    return res
 
 
 def ui_tap_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -198,14 +259,25 @@ def ui_tap_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
     post_elements = parse_xml_dump(post_xml, include_system_bars=True)
     post_fingerprint = compute_screen_fingerprint(post_elements)
 
+    postcondition: Dict[str, Any] = {
+        "screen_changed": pre_fingerprint != post_fingerprint,
+    }
+
+    if getattr(ctx, "debug", False) or args.get("debug", False):
+        postcondition["pre_fingerprint"] = pre_fingerprint
+        postcondition["post_fingerprint"] = post_fingerprint
+
+    has_expect = any(k in args for k in ("expect_desc_contains", "expect_text_contains", "expect_element_absent"))
+    if has_expect:
+        satisfied, matched_elem_dict = _check_expect(args, post_elements)
+        postcondition["expect_satisfied"] = satisfied
+        if matched_elem_dict is not None:
+            postcondition["matched_element"] = matched_elem_dict
+
     return {
         "element": target_elem.to_dict(),
         "bounds": target_elem.bounds,
-        "postcondition": {
-            "screen_changed": pre_fingerprint != post_fingerprint,
-            "pre_fingerprint": pre_fingerprint,
-            "post_fingerprint": post_fingerprint,
-        },
+        "postcondition": postcondition,
     }
 
 
@@ -247,15 +319,26 @@ def ui_long_press_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str
     post_elements = parse_xml_dump(post_xml, include_system_bars=True)
     post_fingerprint = compute_screen_fingerprint(post_elements)
 
+    postcondition: Dict[str, Any] = {
+        "screen_changed": pre_fingerprint != post_fingerprint,
+    }
+
+    if getattr(ctx, "debug", False) or args.get("debug", False):
+        postcondition["pre_fingerprint"] = pre_fingerprint
+        postcondition["post_fingerprint"] = post_fingerprint
+
+    has_expect = any(k in args for k in ("expect_desc_contains", "expect_text_contains", "expect_element_absent"))
+    if has_expect:
+        satisfied, matched_elem_dict = _check_expect(args, post_elements)
+        postcondition["expect_satisfied"] = satisfied
+        if matched_elem_dict is not None:
+            postcondition["matched_element"] = matched_elem_dict
+
     return {
         "element": target_elem.to_dict(),
         "bounds": target_elem.bounds,
         "duration": duration,
-        "postcondition": {
-            "screen_changed": pre_fingerprint != post_fingerprint,
-            "pre_fingerprint": pre_fingerprint,
-            "post_fingerprint": post_fingerprint,
-        },
+        "postcondition": postcondition,
     }
 
 
@@ -430,6 +513,10 @@ UI_DOMAIN = DomainSpec(
                     "include_containers": {"type": "boolean", "description": "Include non-actionable container elements"},
                     "raw": {"type": "boolean", "description": "Return raw XML without filtering"},
                     "filter": {"type": "string", "enum": ["actionable"], "description": "Element filter; only 'actionable' (default behavior)"},
+                    "compact": {"type": "boolean", "description": "Omit false boolean attributes for a smaller JSON payload"},
+                    "text_contains": {"type": "string", "description": "Server-side filter: match visible text substring"},
+                    "desc_contains": {"type": "string", "description": "Server-side filter: match content-desc substring"},
+                    "resource_id": {"type": "string", "description": "Server-side filter: match resource-id"},
                 },
                 "additionalProperties": False,
             },
@@ -440,6 +527,7 @@ UI_DOMAIN = DomainSpec(
                     "screen_fingerprint": {"type": "string"},
                     "total_actionable": {"type": "integer"},
                     "limit": {"type": "integer"},
+                    "matched": {"type": "integer"},
                     "elements": {"type": "array"},
                     "raw_xml": {"type": "string"},
                 },
@@ -460,6 +548,9 @@ UI_DOMAIN = DomainSpec(
                     "description": {"type": "string", "description": "Accessibility description"},
                     "desc_contains": {"type": "string", "description": "Case-insensitive substring match on accessibility description"},
                     "bounds": {"type": "string", "description": "Bounds format 'X1,Y1-X2,Y2'"},
+                    "expect_desc_contains": {"type": "string", "description": "Postcondition check: accessibility description contains substring"},
+                    "expect_text_contains": {"type": "string", "description": "Postcondition check: visible text contains substring"},
+                    "expect_element_absent": {"type": "boolean", "description": "Postcondition check: element matching expectation or selector is absent"},
                 },
                 "additionalProperties": False,
             },
@@ -491,6 +582,9 @@ UI_DOMAIN = DomainSpec(
                     "desc_contains": {"type": "string", "description": "Case-insensitive substring match on accessibility description"},
                     "bounds": {"type": "string", "description": "Bounds format 'X1,Y1-X2,Y2'"},
                     "duration": {"type": "number", "description": "Press duration in seconds (default 1.0)"},
+                    "expect_desc_contains": {"type": "string", "description": "Postcondition check: accessibility description contains substring"},
+                    "expect_text_contains": {"type": "string", "description": "Postcondition check: visible text contains substring"},
+                    "expect_element_absent": {"type": "boolean", "description": "Postcondition check: element matching expectation or selector is absent"},
                 },
                 "additionalProperties": False,
             },
