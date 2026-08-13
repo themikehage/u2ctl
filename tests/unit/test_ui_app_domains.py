@@ -27,12 +27,16 @@ def test_parse_selector_args_all_forms():
     # Direct flags
     assert parse_selector_args({"resource_id": "btn_id"}) == {"resource_id": "btn_id"}
     assert parse_selector_args({"description": "btn_desc"}) == {"description": "btn_desc"}
+    assert parse_selector_args({"text_contains": "bat"}) == {"text_contains": "bat"}
+    assert parse_selector_args({"desc_contains": "desc_sub"}) == {"desc_contains": "desc_sub"}
     assert parse_selector_args({"bounds": "[10,20][100,200]"}) == {"bounds": [10, 20, 100, 200]}
 
     # Selector string prefixes
     assert parse_selector_args({"selector": "text:Hello"}) == {"text": "Hello"}
+    assert parse_selector_args({"selector": "textContains:hell"}) == {"text_contains": "hell"}
     assert parse_selector_args({"selector": "resourceId:com.app:id/btn"}) == {"resource_id": "com.app:id/btn"}
     assert parse_selector_args({"selector": "desc:MyDesc"}) == {"description": "MyDesc"}
+    assert parse_selector_args({"selector": "descContains:mydesc"}) == {"desc_contains": "mydesc"}
     assert parse_selector_args({"selector": "bounds:10,20-100,200"}) == {"bounds": [10, 20, 100, 200]}
     assert parse_selector_args({"selector": "FallbackText"}) == {"text": "FallbackText"}
 
@@ -60,6 +64,10 @@ def test_resolve_selector_strict_mode_and_ambiguity():
     # Priority 2: content_desc (none matched -> exception)
     with pytest.raises(SelectorNotFoundError):
         resolve_selector(elements, {"description": "non_existent"})
+
+    # Substring matching
+    elem_sub, _ = resolve_selector(elements, {"text_contains": "att"})
+    assert elem_sub.text == "Battery"
 
     # Priority 3: bounds
     elem_b, _ = resolve_selector(elements, {"bounds": [100, 200, 500, 300]})
@@ -246,3 +254,116 @@ def test_ui_wait_absent_and_timeout(invoke_cli, monkeypatch):
     assert code_t == 5  # TimeoutError exit code
     data_t = json.loads(stdout_t)
     assert data_t["error"]["code"] == "TIMEOUT"
+
+
+def test_bounds_selector_prefers_smaller_specific_rect():
+    large_scroll = ActionElement(
+        index=0, text="", resource_id="com.app:id/scroll", content_desc="",
+        class_name="android.widget.ScrollView", bounds="[0,0][1080,2340]",
+        clickable=True, scrollable=True, focused=False
+    )
+    small_cell = ActionElement(
+        index=1, text="Cell Text", resource_id="com.app:id/cell", content_desc="",
+        class_name="android.widget.TextView", bounds="[100,200][500,300]",
+        clickable=True, scrollable=False, focused=False
+    )
+    # Order in hierarchy puts large ScrollView first
+    elements = [large_scroll, small_cell]
+    resolved, _ = resolve_selector(elements, {"bounds": [100, 200, 500, 300]})
+    assert resolved.resource_id == "com.app:id/cell"
+
+
+def test_parse_xml_dump_includes_content_desc_non_clickable():
+    xml_with_desc = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+    <hierarchy rotation="0">
+        <node index="0" text="" resource-id="com.app:id/reaction" class="android.view.View" package="com.app"
+              content-desc="Reaction button state" bounds="[10,10][100,100]" checkable="false" checked="false"
+              clickable="false" enabled="true" focusable="false" focused="false" scrollable="false"
+              long-clickable="false" password="false" selected="false" visible-to-user="true" />
+    </hierarchy>"""
+    elements = parse_xml_dump(xml_with_desc)
+    assert len(elements) == 1
+    assert elements[0].content_desc == "Reaction button state"
+
+
+def test_parse_xml_dump_include_containers():
+    xml_container = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+    <hierarchy rotation="0">
+        <node index="0" text="" resource-id="com.app:id/container" class="android.widget.FrameLayout" bounds="[0,0][100,100]" clickable="false" scrollable="false" />
+    </hierarchy>"""
+    elements_default = parse_xml_dump(xml_container, include_containers=False)
+    assert len(elements_default) == 0
+
+    elements_with_containers = parse_xml_dump(xml_container, include_containers=True)
+    assert len(elements_with_containers) == 1
+    assert elements_with_containers[0].resource_id == "com.app:id/container"
+
+
+def test_ui_tap_postcondition_includes_fingerprint_transition(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "tap", "--text", "Battery", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    postcond = data["result"]["postcondition"]
+    assert "screen_changed" in postcond
+    assert "pre_fingerprint" in postcond
+    assert "post_fingerprint" in postcond
+
+
+def test_ui_long_press_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "long-press", "--text", "Battery", "--duration", "1.5", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["element"]["text"] == "Battery"
+    assert data["result"]["duration"] == 1.5
+    assert mock_u2.long_click.called
+
+
+def test_ui_find_handler_found_immediately(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "find", "--text-contains", "Bat", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["found"] is True
+    assert data["result"]["scrolls_performed"] == 0
+    assert data["result"]["element"]["text"] == "Battery"
+
+
+def test_ui_find_handler_not_found(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    mock_u2.window_size.return_value = (1080, 2340)
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "find", "--text-contains", "NonExistent", "--max-scrolls", "2", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["found"] is False
+    assert data["result"]["scrolls_performed"] == 2
+    assert data["result"]["element"] is None
+    assert mock_u2.swipe.call_count == 2
+

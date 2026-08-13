@@ -5,6 +5,76 @@ description: Concise operational guide and feedback contract for AI agents drivi
 
 # u2ctl — Agent Skill & Operational Contract
 
+---
+
+## 0. Routines Protocol (Run FIRST on every task)
+
+Routines are concise, deterministic step-by-step scripts derived from real executions. They eliminate trial-and-error on repeated objectives.
+
+### 0.1 Lookup Flow
+
+```
+TASK RECEIVED
+    │
+    ▼
+Does .agents/skills/u2ctl/routines/ exist?
+    ├── NO  → mkdir .agents/skills/u2ctl/routines/
+    │
+    ▼
+Does routines/<slug>.md exist for this objective?  (see §0.3 for slug rules)
+    ├── YES → READ IT. Execute its steps literally. Skip exploration.
+    └── NO  → Proceed with normal §1–§4 interaction loop.
+              On task completion → CREATE routines/<slug>.md (§0.2).
+```
+
+### 0.2 Routine File Format
+
+After completing (or on meaningful partial completion of) an objective, write the routine file:
+
+```markdown
+# <Human-readable objective title>
+
+## Context
+- App package / Activity where this starts: `<package>`
+- Precondition: <what must be true on screen before step 1>
+
+## Steps
+1. `u2ctl ui find --text-contains "<X>" --scroll-direction down --json`  → locate element
+2. `u2ctl ui tap --text "<X>" --serial <SERIAL> --json`
+3. `u2ctl ui dump --filter actionable --limit 30 --json`  → verify screen changed
+...
+
+## Postcondition
+<What the final screen looks like — fingerprint hint or visible text>
+
+## Known Pitfalls
+- <Any selector ambiguity, timing issue, or OS dialog that appeared>
+```
+
+**Rules for routine content:**
+- Only include commands that were actually executed successfully.
+- No placeholders — use real text, real resource_ids, real scroll directions.
+- If a step failed and was replaced, keep the replacement only.
+- Keep it under 30 lines. One action per step.
+
+### 0.3 Slug Rules
+
+Derive the filename from the objective using these rules (in order):
+
+| Rule | Example objective | Slug |
+|---|---|---|
+| Lowercase words joined by `-` | "Like a post on Facebook" | `like-post-facebook.md` |
+| Strip articles/prepositions | "Tap the back button" | `tap-back-button.md` |
+| Max 5 words | "Open notification shade and clear all" | `open-notification-clear-all.md` |
+
+### 0.4 Routine Maintenance
+
+- If a routine **fails at any step**, update the file: correct the failing step or mark it with `⚠️ UNRELIABLE` and document the actual fix.
+- If the app **updated** and selectors changed, overwrite the affected steps.
+- Never delete a routine — update it.
+
+---
+
 `u2ctl` is a stateless, LLM-agnostic Android control CLI. It exposes a machine-readable capability catalog over standard JSON envelopes.
 
 ---
@@ -34,17 +104,18 @@ u2ctl setup install --serial <SERIAL> --json
 ```mermaid
 graph TD
     A[u2ctl ui dump --filter actionable --json] --> B[Parse actionable elements & screen_fingerprint]
-    B --> C[Select element by text / resource_id / desc / bounds]
-    C --> D[Execute action: ui.tap / ui.input / ui.swipe / ui.press]
-    D --> E[Assert returned postcondition & new screen_fingerprint]
+    B --> C[Select element by text / text-contains / resource_id / desc / desc-contains / bounds]
+    C --> D[Execute action: ui.tap / ui.long-press / ui.input / ui.swipe / ui.press / ui.find]
+    D --> E[Assert returned postcondition screen_changed & new screen_fingerprint]
 ```
 
 ### Key Rules
 1. **Always pass `--serial <SERIAL>`** when more than one device is connected.
-2. **Prefer semantic selectors**: `text`, `resource_id`, or `description` over raw coordinates.
-3. **Use actionable projection**: `ui dump --filter actionable --limit 30` returns pre-filtered interactive elements with bounds and visibility flags.
-4. **Disambiguate matches**: If a selector produces `SELECTOR_MATCHED_MULTIPLE` warning, specify `--bounds "X1,Y1-X2,Y2"`.
-5. **Verify postconditions**: Check `result.postcondition.satisfied == true` and compare `screen_fingerprint` across screen transitions.
+2. **Prefer semantic selectors**: `text`, `text_contains`, `resource_id`, `description`, or `desc_contains` over raw coordinates. Use substring matching (`--text-contains`, `--desc-contains`) for long localized text.
+3. **Use actionable projection**: `ui dump --filter actionable --limit 30` returns pre-filtered interactive elements. Pass `--include-containers` if full non-actionable hierarchy is needed.
+4. **Use `ui.find` for scrolling navigation**: Use `u2ctl ui find --text-contains "..." --scroll-direction down` to scroll automatically until target element appears.
+5. **Disambiguate matches**: If a selector produces `SELECTOR_MATCHED_MULTIPLE` warning, specify `--bounds "X1,Y1-X2,Y2"`.
+6. **Verify postconditions**: Check `result.postcondition.screen_changed` and compare `screen_fingerprint` across screen transitions.
 
 ---
 
