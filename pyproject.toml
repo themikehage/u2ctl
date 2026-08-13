@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "u2ctl"
+version = "0.1.0"
+description = "Stateless, LLM-agnostic Android control CLI backed by uiautomator2"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = [
+    "uiautomator2>=3.7.0,<4",
+    "adbutils>=2.9,<3",
+    "jsonschema>=4.21,<5",
+]
+
+[project.scripts]
+u2ctl = "u2ctl.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/u2ctl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "device: marks tests that require a physical Android device (U2CTL_DEVICE_SERIAL)",
+]
+
+[tool.coverage.run]
+source = ["src/u2ctl"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
