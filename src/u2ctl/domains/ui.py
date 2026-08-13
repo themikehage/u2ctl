@@ -303,6 +303,7 @@ UI_DOMAIN = DomainSpec(
                     "limit": {"type": "integer", "description": "Max elements to return (0 for all, default 30)"},
                     "include_system_bars": {"type": "boolean", "description": "Include status and navigation bars"},
                     "raw": {"type": "boolean", "description": "Return raw XML without filtering"},
+                    "filter": {"type": "string", "enum": ["actionable"], "description": "Element filter; only 'actionable' (default behavior)"},
                 },
                 "additionalProperties": False,
             },

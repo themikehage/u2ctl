@@ -146,6 +146,24 @@ def test_ui_dump_handler(invoke_cli, monkeypatch):
     assert len(data["result"]["elements"]) == 3
 
 
+def test_ui_dump_filter_actionable_flag(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, stderr = invoke_cli(["ui", "dump", "--filter", "actionable", "--json"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["total_actionable"] == 3
+
+    code_bad, stdout_bad, stderr_bad = invoke_cli(["ui", "dump", "--filter", "everything", "--json"])
+    assert code_bad == 2  # argparse rejects values outside the enum
+    assert "invalid choice" in stderr_bad
+
+
 def test_ui_tap_handler(invoke_cli, monkeypatch):
     target = DeviceInfo(serial="dev1", state="device")
     monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
