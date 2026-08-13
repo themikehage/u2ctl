@@ -148,6 +148,10 @@ class Registry:
         for prop_name, prop_spec in properties.items():
             kebab_name = prop_name.replace("_", "-")
             flag_name = f"--{kebab_name}"
+
+            if flag_name in parser._option_string_actions:
+                continue
+
             prop_type = prop_spec.get("type", "string")
             help_text = prop_spec.get("description", "")
             enum_vals = prop_spec.get("enum")
