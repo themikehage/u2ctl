@@ -181,11 +181,71 @@ def test_ui_tap_handler(invoke_cli, monkeypatch):
     mock_u2.dump_hierarchy.return_value = SAMPLE_XML
     monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
 
-    code, stdout, stderr = invoke_cli(["ui", "tap", "--text", "Battery", "--json"])
+    # Standard tap returns postcondition without full element payload
+    code, stdout, stderr = invoke_cli(["ui", "tap", "--text", "Battery"])
     assert code == 0
     data = json.loads(stdout)
-    assert data["result"]["element"]["text"] == "Battery"
+    assert "postcondition" in data["result"]
+    assert "screen_fingerprint" in data["result"]["postcondition"]
     assert mock_u2.click.called
+
+    # Debug mode returns full element payload
+    code_dbg, stdout_dbg, _ = invoke_cli(["ui", "tap", "--text", "Battery", "--debug"])
+    assert code_dbg == 0
+    data_dbg = json.loads(stdout_dbg)
+    assert data_dbg["result"]["element"]["text"] == "Battery"
+
+
+def test_ui_scroll_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.window_size.return_value = (1080, 2340)
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, _ = invoke_cli(["ui", "scroll", "--direction", "down"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["swiped"] is True
+    assert data["result"]["direction"] == "down"
+    assert "screen_fingerprint" in data["result"]
+    assert mock_u2.swipe.called
+
+
+def test_ui_type_handler(invoke_cli, monkeypatch):
+    target = DeviceInfo(serial="dev1", state="device")
+    monkeypatch.setattr("u2ctl.runtime.device.select_target_device", lambda s, a=None: (target, [target]))
+    monkeypatch.setenv("U2CTL_SAFETY", "interactive")
+
+    mock_u2 = MagicMock()
+    mock_u2.dump_hierarchy.return_value = SAMPLE_XML
+    monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
+
+    code, stdout, _ = invoke_cli(["ui", "type", "--text-contains", "Battery", "--text", "TypedSearchText"])
+    assert code == 0
+    data = json.loads(stdout)
+    assert data["result"]["text_typed"] == "TypedSearchText"
+    assert "screen_fingerprint" in data["result"]
+    assert mock_u2.send_keys.called
+
+
+def test_parse_xml_dump_filters_ime_and_systemui():
+    xml_with_ime = """<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+    <hierarchy rotation="0">
+        <node index="0" text="App Button" resource-id="com.app:id/btn" class="android.widget.Button" bounds="[0,0][100,100]" clickable="true" />
+        <node index="1" text="Key q" resource-id="com.google.android.inputmethod.latin:id/key_pos" package="com.google.android.inputmethod.latin" class="android.widget.TextView" bounds="[0,500][50,600]" clickable="true" />
+        <node index="2" text="System Bar" resource-id="com.android.systemui:id/bar" class="android.widget.View" bounds="[0,0][1080,80]" />
+    </hierarchy>"""
+
+    filtered = parse_xml_dump(xml_with_ime, include_system_bars=False)
+    assert len(filtered) == 1
+    assert filtered[0].text == "App Button"
+
+    unfiltered = parse_xml_dump(xml_with_ime, include_system_bars=True)
+    assert len(unfiltered) == 3
 
 
 def test_ui_input_handler(invoke_cli, monkeypatch):
@@ -395,7 +455,7 @@ def test_ui_long_press_handler(invoke_cli, monkeypatch):
     mock_u2.dump_hierarchy.return_value = SAMPLE_XML
     monkeypatch.setattr("uiautomator2.connect", lambda s: mock_u2)
 
-    code, stdout, stderr = invoke_cli(["ui", "long-press", "--text", "Battery", "--duration", "1.5", "--json"])
+    code, stdout, stderr = invoke_cli(["ui", "long-press", "--text", "Battery", "--duration", "1.5", "--debug"])
     assert code == 0
     data = json.loads(stdout)
     assert data["result"]["element"]["text"] == "Battery"

@@ -48,7 +48,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parent_parser = argparse.ArgumentParser(add_help=False)
     parent_parser.add_argument("--serial", type=str, help="ADB device serial")
     parent_parser.add_argument("--timeout", type=int, help="Command timeout in seconds")
-    parent_parser.add_argument("--json", action="store_true", help="Emit output strictly as JSON envelope")
+    parent_parser.add_argument("--json", action="store_true", help="Emit output strictly as JSON envelope (default)")
+    parent_parser.add_argument("--human", action="store_true", help="Emit human-readable output instead of JSON envelope")
     parent_parser.add_argument("--quiet", action="store_true", help="Suppress non-essential diagnostics")
     parent_parser.add_argument("--dry-run", action="store_true", help="Print envelope without executing action")
     parent_parser.add_argument("--strict-selector", action="store_true", help="Fail on ambiguous selector matches")
@@ -78,6 +79,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     tool_name = f"{parsed._cli_domain}.{tool_subcommand}"
     spec = registry.get_tool(tool_name)
     is_json = getattr(parsed, "json", False)
+    is_human = getattr(parsed, "human", False)
     is_quiet = getattr(parsed, "quiet", False)
     is_dry_run = getattr(parsed, "dry_run", False)
     is_yes = getattr(parsed, "yes", False)
@@ -87,13 +89,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         "serial": getattr(parsed, "serial", None),
         "timeout": getattr(parsed, "timeout", None),
         "json": is_json,
+        "human": is_human,
         "strict_selector": getattr(parsed, "strict_selector", False),
     }
 
     try:
         config = resolve_config(cli_dict)
     except U2CtlError as err:
-        print_output(tool_name, None, error=err, json_mode=is_json, quiet=is_quiet)
+        print_output(tool_name, None, error=err, json_mode=not is_human, quiet=is_quiet)
         return err.exit_code
 
     # Guardrail Safety Ceiling Checks (BUILDSPEC G7)

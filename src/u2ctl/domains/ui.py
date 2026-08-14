@@ -29,6 +29,16 @@ ACTIONABLE_CLASSES = {
 }
 
 
+DEFAULT_FILTER_PACKAGES = {
+    "com.android.systemui",
+    "com.google.android.inputmethod.latin",
+    "com.samsung.android.honeyboard",
+    "com.swiftkey.swiftkeyapp",
+    "com.baidu.input",
+    "com.iflytek.inputmethod",
+}
+
+
 def compute_screen_fingerprint(elements: List[ActionElement]) -> str:
     """Compute stable screen fingerprint hash from sorted actionable element properties (G3/G12)."""
     raw_tuples = []
@@ -39,7 +49,12 @@ def compute_screen_fingerprint(elements: List[ActionElement]) -> str:
     return hashlib.sha256(repr_str.encode("utf-8")).hexdigest()[:16]
 
 
-def parse_xml_dump(xml_content: str, include_system_bars: bool = False, include_containers: bool = False) -> List[ActionElement]:
+def parse_xml_dump(
+    xml_content: str,
+    include_system_bars: bool = False,
+    include_containers: bool = False,
+    extra_filter_packages: Optional[set] = None,
+) -> List[ActionElement]:
     """Parse hierarchy XML and filter actionable elements (BUILDSPEC G3)."""
     elements = []
     if not xml_content:
@@ -50,12 +65,17 @@ def parse_xml_dump(xml_content: str, include_system_bars: bool = False, include_
     except Exception:
         return elements
 
+    filter_pkgs = set(DEFAULT_FILTER_PACKAGES)
+    if extra_filter_packages:
+        filter_pkgs.update(extra_filter_packages)
+
     index_counter = 0
     for elem in root.iter():
         if elem.tag == "hierarchy":
             continue
         attrib = elem.attrib
         res_id = attrib.get("resource-id", "")
+        pkg_name = attrib.get("package", "")
         text = attrib.get("text", "")
         desc = attrib.get("content-desc", "")
         cls_name = attrib.get("class", "")
@@ -69,9 +89,13 @@ def parse_xml_dump(xml_content: str, include_system_bars: bool = False, include_
         focused = attrib.get("focused", "false").lower() == "true"
         editable = attrib.get("focusable", "false").lower() == "true" and cls_name.endswith("EditText")
 
-        # Exclude system chrome unless explicitly included (G3)
+        # Exclude system chrome & IMEs unless explicitly included (G3)
         if not include_system_bars:
-            if res_id.startswith("com.android.systemui"):
+            if (
+                pkg_name in filter_pkgs
+                or res_id.startswith("com.android.systemui")
+                or any(res_id.startswith(f"{p}:") for p in filter_pkgs)
+            ):
                 continue
 
         # Actionable filter rules
@@ -194,6 +218,8 @@ def ui_dump_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]
     has_filter = (text_contains is not None) or (desc_contains is not None) or (resource_id is not None)
 
     if has_filter:
+        if limit == 30:
+            limit = 0  # Do not trim results when specific filter is requested
         matched_elems = []
         for e in elements:
             if resource_id and not (e.resource_id == resource_id or e.resource_id.endswith(f":id/{resource_id}")):
@@ -261,6 +287,7 @@ def ui_tap_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
 
     postcondition: Dict[str, Any] = {
         "screen_changed": pre_fingerprint != post_fingerprint,
+        "screen_fingerprint": post_fingerprint,
     }
 
     if getattr(ctx, "debug", False) or args.get("debug", False):
@@ -274,11 +301,15 @@ def ui_tap_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
         if matched_elem_dict is not None:
             postcondition["matched_element"] = matched_elem_dict
 
-    return {
-        "element": target_elem.to_dict(),
-        "bounds": target_elem.bounds,
+    res: Dict[str, Any] = {
         "postcondition": postcondition,
     }
+
+    if getattr(ctx, "debug", False) or args.get("debug", False):
+        res["element"] = target_elem.to_dict()
+        res["bounds"] = target_elem.bounds
+
+    return res
 
 
 def ui_long_press_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -321,6 +352,7 @@ def ui_long_press_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str
 
     postcondition: Dict[str, Any] = {
         "screen_changed": pre_fingerprint != post_fingerprint,
+        "screen_fingerprint": post_fingerprint,
     }
 
     if getattr(ctx, "debug", False) or args.get("debug", False):
@@ -334,12 +366,16 @@ def ui_long_press_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str
         if matched_elem_dict is not None:
             postcondition["matched_element"] = matched_elem_dict
 
-    return {
-        "element": target_elem.to_dict(),
-        "bounds": target_elem.bounds,
+    res: Dict[str, Any] = {
         "duration": duration,
         "postcondition": postcondition,
     }
+
+    if getattr(ctx, "debug", False) or args.get("debug", False):
+        res["element"] = target_elem.to_dict()
+        res["bounds"] = target_elem.bounds
+
+    return res
 
 
 def ui_input_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -497,6 +533,87 @@ def ui_find_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]
             time.sleep(0.5)
 
 
+def ui_scroll_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    scroll_direction = args.get("direction", "down")
+    scroll_duration = args.get("duration", 0.3)
+
+    session = DeviceSession(serial=ctx.serial, timeout=ctx.timeout)
+    d = session.u2
+    ctx.serial = session.serial
+
+    try:
+        w_info = d.window_size()
+        width = w_info[0] if isinstance(w_info, tuple) else w_info.get("width", 1080)
+        height = w_info[1] if isinstance(w_info, tuple) else w_info.get("height", 2340)
+    except Exception:
+        width, height = 1080, 2340
+
+    if scroll_direction == "down":
+        fx, fy = width // 2, int(height * 0.75)
+        tx, ty = width // 2, int(height * 0.25)
+    elif scroll_direction == "up":
+        fx, fy = width // 2, int(height * 0.25)
+        tx, ty = width // 2, int(height * 0.75)
+    elif scroll_direction == "left":
+        fx, fy = int(width * 0.85), height // 2
+        tx, ty = int(width * 0.15), height // 2
+    elif scroll_direction == "right":
+        fx, fy = int(width * 0.15), height // 2
+        tx, ty = int(width * 0.85), height // 2
+    else:
+        raise UsageError(f"Invalid scroll direction: '{scroll_direction}'")
+
+    d.swipe(fx, fy, tx, ty, duration=scroll_duration)
+    time.sleep(0.5)
+
+    post_xml = d.dump_hierarchy()
+    post_elements = parse_xml_dump(post_xml)
+    fingerprint = compute_screen_fingerprint(post_elements)
+
+    return {
+        "swiped": True,
+        "direction": scroll_direction,
+        "screen_fingerprint": fingerprint,
+    }
+
+
+def ui_type_handler(ctx: HandlerContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    text_to_type = args["text"]
+    selector_args = {k: v for k, v in args.items() if k != "text"}
+    selector = parse_selector_args(selector_args) if selector_args else {}
+
+    session = DeviceSession(serial=ctx.serial, timeout=ctx.timeout)
+    d = session.u2
+    ctx.serial = session.serial
+
+    if selector:
+        xml_content = d.dump_hierarchy()
+        elements = parse_xml_dump(xml_content, include_system_bars=True)
+        target_elem, warnings = resolve_selector(elements, selector)
+        for w in warnings:
+            ctx.warn(w)
+
+        bounds = parse_bounds_rect(target_elem.bounds)
+        if bounds:
+            cx = (bounds[0] + bounds[2]) // 2
+            cy = (bounds[1] + bounds[3]) // 2
+            d.click(cx, cy)
+            time.sleep(0.2)
+
+    d.send_keys(text_to_type)
+    time.sleep(0.3)
+
+    post_xml = d.dump_hierarchy()
+    post_elements = parse_xml_dump(post_xml)
+    fingerprint = compute_screen_fingerprint(post_elements)
+
+    return {
+        "text_typed": text_to_type,
+        "screen_fingerprint": fingerprint,
+        "postcondition": {"satisfied": True},
+    }
+
+
 UI_DOMAIN = DomainSpec(
     name="ui",
     description="UI hierarchy inspection, element interaction, and gesture commands",
@@ -556,7 +673,7 @@ UI_DOMAIN = DomainSpec(
             },
             output_schema={
                 "type": "object",
-                "required": ["element", "bounds"],
+                "required": ["postcondition"],
                 "properties": {
                     "element": {"type": "object"},
                     "bounds": {"type": "string"},
@@ -566,7 +683,7 @@ UI_DOMAIN = DomainSpec(
             handler=ui_tap_handler,
             safety="interactive",
             idempotent=False,
-            expect={"element": {}, "state": "exists"},
+            expect={"schema": {"type": "object", "required": ["postcondition"]}},
         ),
         ToolSpec(
             name="ui.long_press",
@@ -590,7 +707,7 @@ UI_DOMAIN = DomainSpec(
             },
             output_schema={
                 "type": "object",
-                "required": ["element", "bounds"],
+                "required": ["postcondition"],
                 "properties": {
                     "element": {"type": "object"},
                     "bounds": {"type": "string"},
@@ -601,7 +718,7 @@ UI_DOMAIN = DomainSpec(
             handler=ui_long_press_handler,
             safety="interactive",
             idempotent=False,
-            expect={"element": {}, "state": "exists"},
+            expect={"schema": {"type": "object", "required": ["postcondition"]}},
         ),
         ToolSpec(
             name="ui.input",
@@ -657,6 +774,63 @@ UI_DOMAIN = DomainSpec(
             safety="interactive",
             idempotent=False,
             expect={"schema": {"type": "object", "required": ["swiped"]}},
+        ),
+        ToolSpec(
+            name="ui.scroll",
+            domain="ui",
+            description="Perform high-level scroll gesture in specified direction.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "direction": {"type": "string", "enum": ["down", "up", "left", "right"], "description": "Scroll direction (default 'down')"},
+                    "duration": {"type": "number", "description": "Gesture duration in seconds"},
+                },
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "required": ["swiped", "direction", "screen_fingerprint"],
+                "properties": {
+                    "swiped": {"type": "boolean"},
+                    "direction": {"type": "string"},
+                    "screen_fingerprint": {"type": "string"},
+                },
+            },
+            handler=ui_scroll_handler,
+            safety="interactive",
+            idempotent=False,
+            expect={"schema": {"type": "object", "required": ["swiped"]}},
+        ),
+        ToolSpec(
+            name="ui.type",
+            domain="ui",
+            description="Macro to focus input field (via selector) and type text in one step.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to type"},
+                    "text_contains": {"type": "string"},
+                    "resource_id": {"type": "string"},
+                    "description": {"type": "string"},
+                    "desc_contains": {"type": "string"},
+                    "bounds": {"type": "string"},
+                },
+                "required": ["text"],
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "required": ["text_typed", "screen_fingerprint", "postcondition"],
+                "properties": {
+                    "text_typed": {"type": "string"},
+                    "screen_fingerprint": {"type": "string"},
+                    "postcondition": {"type": "object"},
+                },
+            },
+            handler=ui_type_handler,
+            safety="interactive",
+            idempotent=False,
+            expect={"schema": {"type": "object", "required": ["text_typed"]}},
         ),
         ToolSpec(
             name="ui.press",

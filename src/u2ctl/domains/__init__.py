@@ -6,6 +6,7 @@ from u2ctl.domains.setup import SETUP_DOMAIN
 from u2ctl.domains.tools import TOOLS_DOMAIN
 from u2ctl.domains.app import APP_DOMAIN
 from u2ctl.domains.ui import UI_DOMAIN
+from u2ctl.domains.run import RUN_DOMAIN
 
 DOMAINS = [
     DEVICE_DOMAIN,
@@ -13,6 +14,7 @@ DOMAINS = [
     TOOLS_DOMAIN,
     APP_DOMAIN,
     UI_DOMAIN,
+    RUN_DOMAIN,
 ]
 
 _REGISTERED = False

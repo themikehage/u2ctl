@@ -19,7 +19,7 @@ def test_cli_human_output(invoke_cli, monkeypatch):
     report_dict = {"status": "ready", "steps": []}
     monkeypatch.setattr("u2ctl.domains.setup.verify_setup", lambda serial=None, adb_path=None: MagicMock(to_dict=lambda: report_dict))
 
-    code, stdout, stderr = invoke_cli(["setup", "verify"])
+    code, stdout, stderr = invoke_cli(["setup", "verify", "--human"])
     assert code == 0
     assert "OK (setup.verify):" in stdout
     assert '"status": "ready"' in stdout

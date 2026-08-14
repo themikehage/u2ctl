@@ -22,8 +22,17 @@ class DeviceSession:
             d.wait_timeout = self.timeout
             self._u2_device = d
             return d
-        except Exception as e:
-            raise DeviceOfflineError(f"Failed to connect uiautomator2 to device '{target.serial}': {e}")
+        except Exception as first_err:
+            # Single auto-reconnect retry attempt for retryable connection errors
+            try:
+                d = u2.connect(target.serial)
+                d.wait_timeout = self.timeout
+                self._u2_device = d
+                return d
+            except Exception as second_err:
+                raise DeviceOfflineError(
+                    f"Failed to connect uiautomator2 to device '{target.serial}' after retry: {second_err}"
+                )
 
     @property
     def u2(self) -> Any:

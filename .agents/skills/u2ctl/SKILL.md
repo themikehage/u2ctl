@@ -75,26 +75,24 @@ Derive the filename from the objective using these rules (in order):
 
 ---
 
-`u2ctl` is a stateless, LLM-agnostic Android control CLI. It exposes a machine-readable capability catalog over standard JSON envelopes.
+`u2ctl` is a stateless, LLM-agnostic Android control CLI. Output to `stdout` is **JSON by default** (use `--human` for text formatting). Diagnostics and audit logs go to `stderr`.
 
 ---
 
 ## 1. Quickstart & Capability Discovery
 
-Every agent interaction MUST use the `--json` flag. Output to `stdout` is guaranteed to be a valid JSON envelope. Diagnostics and audit logs go to `stderr`.
-
 ```bash
 # 1. Discover capability catalog and OpenAI function schemas
-u2ctl tools schema --format openai --json
+u2ctl tools schema --format openai
 
-# 2. List connected ADB devices
-u2ctl device list --json
+# 2. List connected ADB devices (serial auto-selected if only 1 device is connected)
+u2ctl device list
 
 # 3. Check target device readiness (read-only)
-u2ctl setup verify --serial <SERIAL> --json
+u2ctl setup verify
 
-# 4. Provision runtime if not ready (idempotent)
-u2ctl setup install --serial <SERIAL> --json
+# 4. Batch Execution (Atomic, Ultra-Fast Multi-Step Execution)
+u2ctl run --steps '[{"tool":"ui.type","args":{"resource_id":"search_bar","text":"YouTube"}},{"tool":"ui.wait","args":{"text_contains":"YouTube"}}]'
 ```
 
 ---
@@ -103,19 +101,21 @@ u2ctl setup install --serial <SERIAL> --json
 
 ```mermaid
 graph TD
-    A[u2ctl ui dump --desc-contains '...' --compact --json] --> B[Target element found]
-    B --> C[Execute action with expect: ui.tap --desc-contains '...' --expect-desc-contains '...' --json]
-    C --> D[Verify postcondition.expect_satisfied == true in single call]
+    A[u2ctl run --steps '[...]'] --> B[Execute batch in 1 process & single connection]
+    B --> C[Verify step postconditions & screen_fingerprint]
 ```
 
 ### Key Rules & Token Optimizations
-1. **Always pass `--serial <SERIAL>`** when more than one device is connected.
-2. **Combine Action + Verification in 1 Call (HIGH EFFICIENCY)**: Pass `--expect-desc-contains "..."`, `--expect-text-contains "..."`, or `--expect-element-absent` to `ui.tap` / `ui.long-press`. The command performs the post-dump internally and returns `result.postcondition.expect_satisfied: true/false`, eliminating extra dump round-trips.
-3. **Use Server-Side Dumping Filters**: `u2ctl ui dump --desc-contains "Me gusta" --compact --json` filters elements on device before returning, returning 1-2 elements instead of 70+.
-4. **Use Compact Dump Mode**: Pass `--compact` to `ui dump` to omit `false` boolean fields (`focused`, `scrollable`), reducing JSON size by ~40%.
-5. **Prefer Substring Selectors**: Use `--desc-contains` or `--text-contains` for long, localized UI text (e.g. `Botón "Me gusta". Toca dos veces...`) to avoid exact string extraction or UTF-8 mangling.
-6. **Use `ui.find` for Scrolling Navigation**: Use `u2ctl ui find --text-contains "..." --scroll-direction down` to scroll automatically until target element appears.
-7. **Disambiguate Matches**: If a selector produces `SELECTOR_MATCHED_MULTIPLE` warning, specify `--bounds "X1,Y1-X2,Y2"`.
+1. **Use Batch Mode (`u2ctl run`) for Multi-Step Tasks (10x Faster)**: Pass a JSON array of step objects `[{"tool":"...", "args":{...}}, ...]`. It reuses a single connection and process spawn, running tasks in ~3s instead of 30s.
+2. **Auto-Serial Selection**: `--serial <SERIAL>` is optional when only 1 device is connected; it auto-selects automatically.
+3. **Use Macros**:
+   - `ui.type`: Taps target input field and types text in 1 call (`u2ctl ui type --resource-id "input_id" --text "Hello"`).
+   - `ui.scroll`: Swipe in high-level direction (`u2ctl ui scroll --direction down`).
+4. **Combine Action + Verification**: Pass `--expect-desc-contains "..."`, `--expect-text-contains "..."`, or `--expect-element-absent` to `ui.tap` / `ui.long-press`. Returns `postcondition.expect_satisfied: true/false`.
+5. **IME & System UI Filtered Automatically**: System bars and keyboards (Gboard, Samsung Keyboard) are filtered by default. Use `--include-system-bars` only when needed.
+6. **Use Server-Side Dumping Filters**: `u2ctl ui dump --desc-contains "Search"` filters elements on device before returning.
+7. **Use Compact Dump Mode**: Pass `--compact` to `ui dump` to omit false boolean fields.
+8. **Use `ui.find` for Scrolling Navigation**: Use `u2ctl ui find --text-contains "..." --scroll-direction down` to scroll automatically until target element appears.
 
 ---
 

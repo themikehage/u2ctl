@@ -14,10 +14,11 @@ from u2ctl.errors import UsageError
 class Config:
     serial: Optional[str] = None
     timeout: int = 30
-    json_output: bool = False
+    json_output: bool = True
     safety_ceiling: str = "interactive"
     adb_path: Optional[str] = None
     strict_selector: bool = False
+    filter_packages: Optional[set] = None
 
 
 VALID_SAFETY_LEVELS = {"read", "interactive", "destructive"}
@@ -72,14 +73,18 @@ def resolve_config(cli_args: Optional[Dict[str, Any]] = None) -> Config:
         raw_timeout = file_cfg.get("timeout", 30)
     timeout = int(raw_timeout)
 
-    # 3. JSON Output
-    json_output = cli_args.get("json", False)
-    if not json_output:
-        env_json = os.getenv("U2CTL_JSON", "").lower()
-        if env_json in ("1", "true", "yes"):
-            json_output = True
-    if not json_output:
-        json_output = bool(file_cfg.get("json", False))
+    # 3. JSON Output (Default True; --human forces human-readable format)
+    json_output = True
+    if cli_args.get("human"):
+        json_output = False
+    elif os.getenv("U2CTL_HUMAN", "").lower() in ("1", "true", "yes"):
+        json_output = False
+    elif file_cfg.get("human"):
+        json_output = False
+    elif cli_args.get("json"):
+        json_output = True
+    elif os.getenv("U2CTL_JSON", "").lower() in ("0", "false", "no"):
+        json_output = False
 
     # 4. Safety Ceiling
     safety = os.getenv("U2CTL_SAFETY") or file_cfg.get("safety") or "interactive"
@@ -99,6 +104,14 @@ def resolve_config(cli_args: Optional[Dict[str, Any]] = None) -> Config:
     if not strict_selector:
         strict_selector = bool(file_cfg.get("strictSelector", False))
 
+    # 7. Filter Packages
+    extra_filter = os.getenv("U2CTL_FILTER_PACKAGES")
+    filter_packages = set()
+    if extra_filter:
+        filter_packages.update(pkg.strip() for pkg in extra_filter.split(",") if pkg.strip())
+    if "filterPackages" in file_cfg and isinstance(file_cfg["filterPackages"], list):
+        filter_packages.update(file_cfg["filterPackages"])
+
     return Config(
         serial=serial,
         timeout=timeout,
@@ -106,4 +119,6 @@ def resolve_config(cli_args: Optional[Dict[str, Any]] = None) -> Config:
         safety_ceiling=safety,
         adb_path=adb_path,
         strict_selector=strict_selector,
+        filter_packages=filter_packages if filter_packages else None,
     )
+
