@@ -3,6 +3,7 @@ import * as fs from "fs";
 import type { DomainSpec, HandlerContext } from "../registry";
 import { registry } from "../registry";
 import { UsageError, InternalError, U2Error } from "../errors";
+import { DaemonClient } from "../daemon/client";
 
 export async function executeBatchSteps(
   steps: Array<Record<string, unknown>>,
@@ -15,6 +16,13 @@ export async function executeBatchSteps(
   const stepResults: Array<Record<string, unknown>> = [];
   let aborted = false;
   let failedStep: Record<string, unknown> | undefined = undefined;
+
+  if (ctx.serial) {
+    try {
+      const daemonClient = new DaemonClient(ctx.serial);
+      await daemonClient.ensureDaemon();
+    } catch {}
+  }
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];

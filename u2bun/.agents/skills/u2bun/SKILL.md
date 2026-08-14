@@ -1,6 +1,6 @@
 ---
 name: u2bun
-description: Operational guide and feedback contract for AI agents driving Android devices via the u2bun Bun/TypeScript CLI.
+description: "Trigger: driving an Android device via the u2bun CLI. Operational guide and feedback contract for AI agents controlling Android devices with the u2bun Bun/TypeScript CLI."
 ---
 
 # u2bun — Agent Skill & Operational Contract
@@ -66,46 +66,93 @@ inside u2bun
 
 ---
 
-## 1. Quickstart & Capability Discovery
+## 1. Command Reference (full catalog)
 
-```bash
-# 1. Discover capability catalog and OpenAI function schemas
-bun run src/index.ts tools schema --format openai --json
+Run everything as `bun run src/index.ts [--serial <SERIAL>] <domain> <command> [flags]`. `--serial` is optional when exactly one device is online. Flags accept kebab-case or snake_case.
 
-# 2. List connected ADB devices (serial auto-selected if only 1 device connected)
-bun run src/index.ts device list --json
+### 1.1 `ui` — hierarchy, selectors, gestures
 
-# 3. Get device metadata and screen status
-bun run src/index.ts --serial da0f5e72 device info --json
+| Command | Purpose | Key flags |
+|---|---|---|
+| `ui snapshot` | Compact semantic tree with `@1..@N` handles (LLM-first). **Prefer over `ui dump`.** | `--limit` (default 30), `--include-system-bars`, `--include-handles`, `--diff` (only changed lines), `--fingerprint` |
+| `ui dump` | Raw actionable element list + fingerprint. Use only when a handle is missing. | `--filter actionable\|all`, `--limit`, `--raw` (returns `raw_xml`) |
+| `ui tap` | Tap element by handle or selector. | `--ref @N`, `--text`, `--text-contains`, `--resource-id`, `--desc-contains`, `--description`, `--class-name`, `--bounds`, `--expect-desc-contains`, `--expect-text-contains`, `--expect-element-absent` |
+| `ui long_press` | Long-press element. | same selectors as `tap` + `--duration` + `--expect-*` |
+| `ui input` | Type into focused field. | `--text`, `--clear-first` |
+| `ui type` | Macro: focus field (selector) + type in one step. | `--text` + any `tap` selector |
+| `ui swipe` | Gesture from point A to B. | `--from-pos X,Y --to-pos X,Y` (or `--from-x/--from-y/--to-x/--to-y`), `--duration` |
+| `ui scroll` | High-level scroll in a direction. | `--direction down\|up\|left\|right`, `--duration` |
+| `ui press` | Hardware/nav key. | `--key back\|home\|enter\|delete\|volume_up\|...` |
+| `ui wait` | Block until selector appears/disappears. | any `tap` selector + `--timeout` (s), `--absent` |
+| `ui find` | Scroll repeatedly until selector found. **Use for "hunt" loops instead of manual scroll+snapshot.** | any `tap` selector + `--scroll-direction`, `--max-scrolls` (default 10), `--scroll-duration` |
 
-# 4. Dump ultra-compact semantic UI snapshot with handles @1, @2, ... (85%+ token savings)
-bun run src/index.ts --serial da0f5e72 ui snapshot --json
+### 1.2 Selector flags (shared by tap/long_press/type/wait/find)
 
-# 5. Tap element directly by ref handle (@1, @2, ...)
-bun run src/index.ts --serial da0f5e72 ui tap --ref @1 --json
+- `--ref @N` — handle from the last `ui snapshot` (fastest, sub-15ms).
+- `--text "X"` / `--text-contains "X"` — exact / substring match on text.
+- `--resource-id "pkg:id/x"` / `--description "X"` / `--desc-contains "X"`.
+- `--bounds "[x1,y1][x2,y2]"` — absolute coordinates fallback.
+- `--expect-desc-contains` / `--expect-text-contains` / `--expect-element-absent` — postcondition verification; the tap re-dumps and reports `expect_satisfied`.
 
-# 6. Input text into focused field
-bun run src/index.ts --serial da0f5e72 ui input --text "Hello Bun" --json
+### 1.3 Other domains
+
+| Command | Purpose | Key flags |
+|---|---|---|
+| `app current` | Foreground package/activity. | — |
+| `app start` | Launch app. | `--package`, `--activity`, `--stop-first` |
+| `app stop` | Force-stop app. | `--package` |
+| `app list` | Installed packages. | `--third-party-only` (default true) |
+| `device list` | Connected ADB devices. | `--online` |
+| `device auto` | Resolve single online serial. | — |
+| `device status` | Target device state/ready. | — |
+| `device info` | Model, SDK, display, current package. | — |
+| `device reconnect` | Recover connection. | `--hard` (restart adb server) |
+| `setup verify` | Read-only readiness check. | — |
+| `setup install` | Idempotent provision runtime. | `--keep-awake` |
+| `setup diagnose` | Diagnostic facts, no mutation. | — |
+| `tools list` | Capability catalog. | — |
+| `tools show` | Spec for one tool/domain. | `--name` |
+| `tools schema` | Machine-readable schema. | `--format openai\|raw` |
+| `run steps` | Batch sequence in one process. | `--steps '<JSON array>'` or `--file <path>` |
+
+`run steps` composes any sequence, e.g. `run steps --steps '[{"tool":"ui.scroll","args":{"direction":"down"}},{"tool":"ui.snapshot","args":{}}]'`.
+
+### 1.4 Accented / non-ASCII text input
+
+`ui input` uses `setClipboard` + `pasteClipboard` (uiautomator2 RPC), which **corrupts non-ASCII chars** (`í` → `��`). For accented text (e.g. Spanish), use the AdbKeyboard IME broadcast instead:
+
 ```
+# 1. Focus the field first (tap it). Without focus, ADB_KEYBOARD_CLEAR_TEXT fails with "null object reference".
+# 2. Type UTF-8 text as base64:
+adb -s <SERIAL> shell am broadcast -a ADB_KEYBOARD_INPUT_TEXT --es text <base64-of-utf8-text>
+# 3. Hide the IME:
+adb -s <SERIAL> shell am broadcast -a ADB_KEYBOARD_HIDE
+```
+
+- The IME is `com.github.uiautomator/.AdbKeyboard`. It responds to **`ADB_KEYBOARD_INPUT_TEXT`** (extra `text`, base64-encoded) — NOT `ADB_INPUT_TEXT`/`ADB_INPUT_B64` (the old senzhk ADBKeyBoard actions, which are enqueued but never dispatched).
+- Success signal: broadcast returns `result=-1`.
+- Clear with `ADB_KEYBOARD_CLEAR_TEXT` (only works while the field is focused).
+- Verify no mojibake via raw dump: assert `'\ufffd' not in raw_xml`.
 
 ---
 
-## 2. Standard Interaction Loop (v2 — Handle-First)
+## 2. Standard Interaction Loop (Handle-First)
 
 ```mermaid
 graph TD
-    A[bun run src/index.ts --serial <SERIAL> ui snapshot --json] --> B[Parse compact text & handles @1, @2...]
+    A[ui snapshot] --> B[Parse handles @1, @2...]
     B --> C[Select target handle: --ref @N]
-    C --> D[Execute ui.tap --ref @N / ui.input / ui.swipe]
-    D --> E[Verify result & screen_fingerprint update]
+    C --> D[ui tap --ref @N / input / swipe / scroll / press]
+    D --> E[Verify with --expect-* or re-snapshot]
 ```
 
-### Key Rules & Optimizations
-1. **Handle-First Selection**: Prefer `ui snapshot` and `--ref @N` over raw `ui dump`. It reduces LLM context window tokens by 85%+ and uses the background daemon for sub-20ms action execution.
-2. **Auto-Serial Selection**: `--serial <SERIAL>` is optional when exactly 1 device is connected.
-3. **Semantic Selectors**: Use `--text`, `--resource-id`, or `--description` as fallbacks when `@ref` handles are not available.
-4. **Screen Fingerprints**: `ui.snapshot` includes a `screen_fingerprint` hash to detect UI state changes between steps.
-5. **Filtered Dump**: System chrome (status bar, navigation bar, IME) is filtered automatically by default. Use `--include-system-bars` if system interaction is required.
+### Key Rules
+
+1. **Handle-First**: prefer `ui snapshot` + `--ref @N` over `ui dump`. 85%+ token savings, sub-20ms via background daemon.
+2. **Hunt loops**: use `ui find` (scroll-until-found) instead of repeated `scroll` + `snapshot`.
+3. **Verify cheaply**: use `--expect-*` on mutations, or `ui snapshot --diff` to see only changed lines.
+4. **Handles are ephemeral**: `@N` refers to the LAST snapshot; re-snapshot after any screen change before tapping by ref.
+5. **Gesture commands** (`swipe`, `scroll`, `press`, `input`) need no prior dump.
 
 ---
 
@@ -131,12 +178,14 @@ All failures return exit code `> 0` and an error envelope:
 | Exit | Error Code | Retryable? | Action Strategy |
 |---:|---|:---:|---|
 | 1 | `USAGE` | No | Check argument schema with `bun run src/index.ts tools show --name <TOOL> --json`. |
-| 2 | `DEVICE_OFFLINE` / `DEVICE_NOT_FOUND` | Yes | Run `bun run src/index.ts device reconnect --serial <SERIAL> --json`. Retry action once. |
+| 2 | `DEVICE_OFFLINE` / `DEVICE_NOT_FOUND` / `DEVICE_NONE` / `DEVICE_AMBIGUOUS` | Yes | Run `bun run src/index.ts device reconnect --serial <SERIAL> --json` or pass `--serial`. Retry once. |
 | 2 | `DEVICE_UNAUTHORIZED` | Yes | Prompt human operator to accept RSA key prompt on device screen. |
-| 3 | `SELECTOR_NOT_FOUND` | No | Re-dump hierarchy with `bun run src/index.ts ui dump --json`. Screen moved. |
-| 4 | `PROVISION_BLOCKED` | No | Prompt human operator to enable "Install via USB" in Developer options. |
+| 3 | `SELECTOR_NOT_FOUND` / `APP_NOT_FOUND` | No | Re-dump with `ui dump` or `ui snapshot`; screen moved. Verify package with `app list`. |
+| 4 | `UIAUTOMATOR_DOWN` | Yes | uiautomator2 runtime down; auto-start should fire, else `setup install`. |
+| 4 | `PROVISION_BLOCKED` / `PROVISION_FAILED` | No/Yes | Enable "Install via USB" in Developer options, or `setup diagnose`. |
 | 5 | `TIMEOUT` / `TRANSIENT` | Yes | Reconnect device or raise `--timeout <SECS>`. Retry once. |
-| 5 | `POSTCONDITION_FAILED` | No | UI did not transition as expected. Re-dump hierarchy to inspect state change. |
+| 5 | `POSTCONDITION_FAILED` | No | UI did not transition as expected. Re-dump to inspect state. |
+| 10 | `INTERNAL` | No | Report via `u2bun-error-report` (§4). |
 
 ---
 

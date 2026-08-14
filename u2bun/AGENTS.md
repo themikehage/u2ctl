@@ -18,3 +18,4 @@ This document defines the core invariants and rules for `u2bun`. Every contribut
 
 - Run unit tests before committing: `bun test tests/unit`
 - Any change to `ui.snapshot` or element parsing MUST maintain or reduce token footprint and pass deduplication tests.
+- Afer any change we need to keep the skill `u2bun` updated.

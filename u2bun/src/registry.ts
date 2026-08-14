@@ -98,6 +98,15 @@ export class Registry {
   public async verifyPostcondition(ctx: HandlerContext, tool: ToolSpec, result: Record<string, unknown>): Promise<void> {
     if (!tool.expect) return;
 
+    if (tool.expect.schema instanceof z.ZodType) {
+      const parsed = tool.expect.schema.safeParse(result);
+      if (!parsed.success) {
+        throw new PostconditionFailedError(
+          `Postcondition failed: result does not satisfy expected schema (${parsed.error.issues.map((i) => i.message).join(", ")})`
+        );
+      }
+    }
+
     if (tool.expect.element) {
       const postcondRes = (result.postcondition as Record<string, unknown> | undefined);
       if (tool.expect.state === "exists" && postcondRes && !postcondRes.satisfied) {

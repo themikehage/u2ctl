@@ -57,7 +57,8 @@ export function formatErrorEnvelope(
 
 export function renderOutput(
   envelope: JsonEnvelope,
-  quiet: boolean = false
+  quiet: boolean = false,
+  json: boolean = false
 ): void {
   // Always emit warnings to stderr immediately so they are never lost
   if (envelope.warnings && envelope.warnings.length > 0) {
@@ -67,6 +68,11 @@ export function renderOutput(
   }
 
   if (quiet && envelope.ok) {
+    return;
+  }
+
+  if (json) {
+    console.log(JSON.stringify(envelope));
     return;
   }
 
@@ -90,7 +96,15 @@ export function renderOutput(
       return;
     }
 
-    // 2. Query commands: app.current, app.list, device.list, device.status/auto
+    // 2. Query commands: app.current, app.list, device.list, device.status/auto, daemon.status
+    if (typeof res.running === "boolean") {
+      if (res.running) {
+        console.log(`running\tport:${res.port}\tpid:${res.pid}\tbuild:${res.build_id || ""}`);
+      } else {
+        console.log("stopped");
+      }
+      return;
+    }
     if (typeof res.package === "string" && typeof res.activity === "string" && !res.started && !res.stopped) {
       console.log(`${res.package}/${res.activity}`);
       return;
@@ -109,7 +123,7 @@ export function renderOutput(
       return;
     }
 
-    // 3. Action commands (tap, input, press, swipe, long_press, wait, app.start, app.stop, etc.): return "ok"
+    // 3. Action commands (tap, input, press, swipe, long_press, wait, app.start, app.stop, daemon.restart, daemon.stop, etc.): return "ok"
     if (
       res.tapped ||
       res.success ||
@@ -117,6 +131,7 @@ export function renderOutput(
       res.swiped ||
       res.started ||
       res.stopped ||
+      res.restarted ||
       res.satisfied ||
       res.duration !== undefined ||
       Object.keys(res).length === 0

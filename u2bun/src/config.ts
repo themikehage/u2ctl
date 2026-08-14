@@ -7,6 +7,7 @@ export interface Config {
   timeout: number;
   quiet: boolean;
   debug: boolean;
+  json: boolean;
   strictSelector: boolean;
   safety: "read" | "interactive" | "destructive";
   adbPath?: string;
@@ -16,6 +17,7 @@ export const DEFAULT_CONFIG: Config = {
   timeout: 30,
   quiet: false,
   debug: false,
+  json: false,
   strictSelector: false,
   safety: "interactive",
 };
@@ -66,6 +68,7 @@ export function resolveConfig(cliFlags: Partial<Config>): Config {
     timeout: cliFlags.timeout ?? envTimeout ?? fileConfig.timeout ?? DEFAULT_CONFIG.timeout,
     quiet: cliFlags.quiet ?? (fileConfig.quiet || DEFAULT_CONFIG.quiet),
     debug: cliFlags.debug ?? (fileConfig.debug || DEFAULT_CONFIG.debug),
+    json: cliFlags.json ?? (fileConfig.json || DEFAULT_CONFIG.json),
     strictSelector: cliFlags.strictSelector ?? (envStrict || fileConfig.strictSelector || DEFAULT_CONFIG.strictSelector),
     safety: cliFlags.safety ?? envSafety ?? fileConfig.safety ?? DEFAULT_CONFIG.safety,
     adbPath: cliFlags.adbPath ?? envAdb ?? fileConfig.adbPath,

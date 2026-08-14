@@ -67,9 +67,28 @@ export const APP_DOMAIN: DomainSpec = {
           await execAdb(["-s", target.serial, "shell", "am", "force-stop", args.package]);
         }
 
-        let cmd = ["-s", target.serial, "shell", "monkey", "-p", args.package, "-c", "android.intent.category.LAUNCHER", "1"];
+        let cmd: string[];
         if (args.activity) {
           cmd = ["-s", target.serial, "shell", "am", "start", "-n", `${args.package}/${args.activity}`];
+        } else {
+          // Attempt fast resolve-activity first
+          let resolvedActivity: string | null = null;
+          try {
+            const res = await execAdb(["-s", target.serial, "shell", "cmd", "package", "resolve-activity", "--brief", args.package]);
+            if (res.exitCode === 0 && res.stdout.includes("/")) {
+              const lines = res.stdout.trim().split("\n");
+              const lastLine = lines[lines.length - 1]?.trim();
+              if (lastLine && lastLine.includes("/")) {
+                resolvedActivity = lastLine;
+              }
+            }
+          } catch {}
+
+          if (resolvedActivity) {
+            cmd = ["-s", target.serial, "shell", "am", "start", "-n", resolvedActivity];
+          } else {
+            cmd = ["-s", target.serial, "shell", "monkey", "-p", args.package, "-c", "android.intent.category.LAUNCHER", "1"];
+          }
         }
 
         const { stdout, stderr, exitCode } = await execAdb(cmd);

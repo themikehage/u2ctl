@@ -42,6 +42,10 @@ export function parseArgs(rawArgs: string[]): {
       configFlags.serial = rawArgs[++i];
     } else if (arg.startsWith("--serial=")) {
       configFlags.serial = arg.split("=", 2)[1];
+    } else if (arg === "--safety") {
+      configFlags.safety = rawArgs[++i] as any;
+    } else if (arg.startsWith("--safety=")) {
+      configFlags.safety = arg.split("=", 2)[1] as any;
     } else if (arg === "--timeout") {
       configFlags.timeout = Number(rawArgs[++i]);
     } else if (arg.startsWith("--timeout=")) {
@@ -50,6 +54,8 @@ export function parseArgs(rawArgs: string[]): {
       configFlags.quiet = true;
     } else if (arg === "--debug") {
       configFlags.debug = true;
+    } else if (arg === "--json") {
+      configFlags.json = true;
     } else if (arg === "--strict-selector") {
       configFlags.strictSelector = true;
     } else if (arg.startsWith("--no-")) {
@@ -102,7 +108,7 @@ export function printHelp(): void {
   console.log(`u2bun - Android UI Automator Control CLI (Bun rewrite)
 
 Usage:
-  u2bun [--serial SERIAL] [--timeout SECONDS] [--quiet] <domain> <command> [options]
+  u2bun [--serial SERIAL] [--safety LEVEL] [--timeout SECONDS] [--quiet] <domain> <command> [options]
 
 Domains & Commands:
 ${registry
@@ -116,9 +122,11 @@ ${registry
 
 Global Options:
   --serial SERIAL       Target device ADB serial
+  --safety LEVEL        Safety ceiling: read | interactive | destructive (default: destructive)
   --timeout SECONDS     Global timeout (default: 30)
   --quiet               Suppress diagnostic stderr output
   --strict-selector     Fail on ambiguous selector matches
+  --json                Emit standard machine-readable JSON envelope
   --help, -h            Show help message
   --version, -v         Show version
 `);
@@ -146,7 +154,7 @@ export async function runCli(argv: string[]): Promise<number> {
   if (!tool) {
     const err = new UsageError(`Unknown command '${domainName} ${subName || ""}'. Use --help for available commands.`);
     const envelope = formatErrorEnvelope(toolName, err, config.serial);
-    renderOutput(envelope, config.quiet);
+    renderOutput(envelope, config.quiet, config.json);
     return err.exitCode;
   }
 
@@ -157,7 +165,7 @@ export async function runCli(argv: string[]): Promise<number> {
       `Tool '${tool.name}' requires safety level '${tool.safety}', but ceiling is locked to '${config.safety}'`
     );
     const envelope = formatErrorEnvelope(tool.name, err, config.serial);
-    renderOutput(envelope, config.quiet);
+    renderOutput(envelope, config.quiet, config.json);
     return err.exitCode;
   }
 
@@ -185,7 +193,7 @@ export async function runCli(argv: string[]): Promise<number> {
     await registry.verifyPostcondition(ctx, tool, validatedResult);
 
     const envelope = formatSuccessEnvelope(tool.name, ctx.serial, validatedResult, warnings);
-    renderOutput(envelope, config.quiet);
+    renderOutput(envelope, config.quiet, config.json);
     return 0;
   } catch (error: any) {
     let uError: U2Error;
@@ -198,7 +206,7 @@ export async function runCli(argv: string[]): Promise<number> {
     }
 
     const envelope = formatErrorEnvelope(tool.name, uError, ctx.serial, warnings);
-    renderOutput(envelope, config.quiet);
+    renderOutput(envelope, config.quiet, config.json);
     return uError.exitCode;
   }
 }

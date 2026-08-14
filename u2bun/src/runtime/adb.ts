@@ -32,6 +32,7 @@ export async function execAdb(
   const proc = Bun.spawn([adbPath, ...args], {
     stdout: "pipe",
     stderr: "pipe",
+    windowsHide: true,
   });
 
   const stdout = await new Response(proc.stdout).text();
@@ -147,4 +148,26 @@ export async function forwardPort(
   if (exitCode !== 0) {
     throw new ADBUnavailableError(`Failed to forward port tcp:${localPort} to tcp:${remotePort}: ${stderr}`);
   }
+}
+
+export async function inputTextViaAdbKeyboard(
+  serial: string,
+  text: string,
+  customAdbPath?: string
+): Promise<boolean> {
+  const b64 = Buffer.from(text, "utf8").toString("base64");
+  const { stdout } = await execAdb(
+    ["-s", serial, "shell", "am", "broadcast", "-a", "ADB_KEYBOARD_INPUT_TEXT", "--es", "text", b64],
+    customAdbPath
+  );
+  // The uiautomator2 AdbKeyboard receiver sets result=-1 on success; without a
+  // registered receiver the broadcast completes with result=0 (no dispatch).
+  const ok = stdout.includes("result=-1");
+  if (ok) {
+    await execAdb(
+      ["-s", serial, "shell", "am", "broadcast", "-a", "ADB_KEYBOARD_HIDE"],
+      customAdbPath
+    );
+  }
+  return ok;
 }

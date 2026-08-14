@@ -1,6 +1,7 @@
-import { selectTargetDevice, forwardPort } from "./adb";
+import { selectTargetDevice, forwardPort, inputTextViaAdbKeyboard } from "./adb";
 import { U2Client } from "./u2client";
-import { DeviceOfflineError } from "../errors";
+import { DeviceOfflineError, U2Error } from "../errors";
+import { ensureU2Runtime } from "./runtime";
 
 export class DeviceSession {
   public serial: string = "";
@@ -22,27 +23,17 @@ export class DeviceSession {
     this.serial = target.serial;
 
     try {
-      // Forward ADB port 9008
       await forwardPort(this.serial, this.localPort, 9008, this.adbPath);
+      await ensureU2Runtime(this.serial, this.localPort, this.adbPath);
       const client = new U2Client(this.localPort, this.timeout);
-      
-      // Ping check
       await client.ping();
       this.client = client;
       return client;
-    } catch (firstErr: any) {
-      // Retry once after auto-forward
-      try {
-        await forwardPort(this.serial, this.localPort, 9008, this.adbPath);
-        const client = new U2Client(this.localPort, this.timeout);
-        await client.ping();
-        this.client = client;
-        return client;
-      } catch (secondErr: any) {
-        throw new DeviceOfflineError(
-          `Failed to connect uiautomator2 to device '${this.serial}' after retry: ${secondErr.message || String(secondErr)}`
-        );
+    } catch (err: any) {
+      if (err instanceof U2Error) {
+        throw err;
       }
+      throw new DeviceOfflineError(this.serial, err.message || String(err));
     }
   }
 
@@ -51,5 +42,17 @@ export class DeviceSession {
       return this.connect();
     }
     return this.client;
+  }
+
+  async setInputText(text: string): Promise<string> {
+    // Non-ASCII text is corrupted by the clipboard+paste RPC path; the
+    // AdbKeyboard IME broadcast preserves UTF-8 correctly.
+    if (/[^\x00-\x7F]/.test(text)) {
+      const ok = await inputTextViaAdbKeyboard(this.serial, text, this.adbPath);
+      if (ok) return "adb_keyboard";
+    }
+    const client = await this.getClient();
+    await client.setInputText(text);
+    return "clipboard";
   }
 }

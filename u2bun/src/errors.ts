@@ -82,16 +82,31 @@ export class DeviceUnauthorizedError extends U2Error {
 }
 
 export class DeviceOfflineError extends U2Error {
-  constructor(serial: string) {
+  constructor(serial: string, cause?: string) {
+    const detail = cause ? `: ${cause}` : "";
     super(
       "DEVICE_OFFLINE",
-      `Device '${serial}' is offline`,
+      `Device '${serial}' is offline${detail}`,
       ExitCode.DEVICE,
       true,
       `Run u2bun device reconnect --serial ${serial}`
     );
   }
 }
+
+export class RuntimeDownError extends U2Error {
+  constructor(serial: string, cause?: string) {
+    const detail = cause ? `: ${cause}` : "";
+    super(
+      "UIAUTOMATOR_DOWN",
+      `uiautomator2 server is down on device '${serial}'${detail}`,
+      ExitCode.PROVISION,
+      true,
+      "Run `u2bun setup install` or let u2bun auto-start the runtime"
+    );
+  }
+}
+
 
 export class ADBUnavailableError extends U2Error {
   constructor(message: string = "`adb` command not found on system PATH") {

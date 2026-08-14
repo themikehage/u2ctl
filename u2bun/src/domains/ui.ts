@@ -4,7 +4,7 @@ import type { DomainSpec } from "../registry";
 import { DeviceSession } from "../runtime/device";
 import type { ActionElement } from "../models";
 import { parseSelectorArgs, parseBoundsRect } from "../selectors/parser";
-import { resolveSelector, rectOverlapRatio } from "../selectors/resolver";
+import { resolveSelector, rectOverlapRatio, OVERLAP_MERGE } from "../selectors/resolver";
 import { SelectorNotFoundError, TimeoutError, UsageError } from "../errors";
 import { DaemonClient } from "../daemon/client";
 
@@ -85,25 +85,75 @@ export function deduplicateAndFilterElements(elements: ActionElement[]): ActionE
     return true;
   });
 
+  const elementRects = filtered.map((el) => parseBoundsRect(el.bounds));
   const result: ActionElement[] = [];
+  const resultRects: (ReturnType<typeof parseBoundsRect>)[] = [];
 
-  for (const current of filtered) {
-    const currentRect = parseBoundsRect(current.bounds);
+  const CELL_SIZE = 150;
+  const grid = new Map<string, number[]>();
+
+  const getCellKeys = (rect: ReturnType<typeof parseBoundsRect>) => {
+    if (!rect) return [];
+    const minX = Math.floor(rect.x1 / CELL_SIZE);
+    const maxX = Math.floor(rect.x2 / CELL_SIZE);
+    const minY = Math.floor(rect.y1 / CELL_SIZE);
+    const maxY = Math.floor(rect.y2 / CELL_SIZE);
+    const keys: string[] = [];
+    for (let x = minX; x <= maxX; x++) {
+      for (let y = minY; y <= maxY; y++) {
+        keys.push(`${x},${y}`);
+      }
+    }
+    return keys;
+  };
+
+  for (let idx = 0; idx < filtered.length; idx++) {
+    const current = filtered[idx];
+    const currentRect = elementRects[idx];
     if (!currentRect) {
       result.push(current);
+      resultRects.push(null);
       continue;
     }
 
+    const cellKeys = getCellKeys(currentRect);
+    const candidateIndices = new Set<number>();
+    for (const key of cellKeys) {
+      const existingInCell = grid.get(key);
+      if (existingInCell) {
+        for (const i of existingInCell) candidateIndices.add(i);
+      }
+    }
+
     let merged = false;
-    for (let i = 0; i < result.length; i++) {
-      const existing = result[i];
-      const existingRect = parseBoundsRect(existing.bounds);
+    for (const i of candidateIndices) {
+      const existingRect = resultRects[i];
       if (!existingRect) continue;
 
+      const area1 = (currentRect.x2 - currentRect.x1) * (currentRect.y2 - currentRect.y1);
+      const area2 = (existingRect.x2 - existingRect.x1) * (existingRect.y2 - existingRect.y1);
+      const minArea = Math.min(area1, area2);
+      const maxArea = Math.max(area1, area2);
+      const sizeRatio = maxArea / Math.max(minArea, 1);
+
+      // Do not merge elements of vastly different sizes (e.g. child inside container/card)
+      if (sizeRatio > 2.5) {
+        continue;
+      }
+
+      const existing = result[i];
+      const existingText = (existing.text || existing.contentDesc || "").trim();
+      const currentText = (current.text || current.contentDesc || "").trim();
+
+      // Never merge two elements with distinct non-empty labels
+      if (existingText && currentText && existingText !== currentText) {
+        continue;
+      }
+
       const overlap = rectOverlapRatio(currentRect, existingRect);
-      if (overlap >= 0.85) {
-        const existingHasText = Boolean((existing.text && existing.text.trim()) || (existing.contentDesc && existing.contentDesc.trim()));
-        const currentHasText = Boolean((current.text && current.text.trim()) || (current.contentDesc && current.contentDesc.trim()));
+      if (overlap >= OVERLAP_MERGE) {
+        const existingHasText = Boolean(existingText);
+        const currentHasText = Boolean(currentText);
 
         if (!existingHasText && currentHasText) {
           result[i] = {
@@ -113,12 +163,7 @@ export function deduplicateAndFilterElements(elements: ActionElement[]): ActionE
             clickable: existing.clickable || current.clickable,
             focused: existing.focused || current.focused,
           };
-        } else if (existingHasText && !currentHasText) {
-          result[i] = {
-            ...existing,
-            clickable: existing.clickable || current.clickable,
-            focused: existing.focused || current.focused,
-          };
+          resultRects[i] = currentRect;
         } else {
           result[i] = {
             ...existing,
@@ -132,7 +177,17 @@ export function deduplicateAndFilterElements(elements: ActionElement[]): ActionE
     }
 
     if (!merged) {
+      const newIndex = result.length;
       result.push(current);
+      resultRects.push(currentRect);
+      for (const key of cellKeys) {
+        let cell = grid.get(key);
+        if (!cell) {
+          cell = [];
+          grid.set(key, cell);
+        }
+        cell.push(newIndex);
+      }
     }
   }
 
@@ -143,11 +198,54 @@ export function deduplicateAndFilterElements(elements: ActionElement[]): ActionE
   }));
 }
 
+export function sortByRelevance(
+  elements: ActionElement[],
+  screenWidth: number = 1080,
+  screenHeight: number = 2340
+): ActionElement[] {
+  const centerX = screenWidth / 2;
+  const centerY = screenHeight / 2;
+
+  const sorted = [...elements].sort((a, b) => {
+    // 1. Focused element first
+    if (a.focused && !b.focused) return -1;
+    if (!a.focused && b.focused) return 1;
+
+    // 2. Clickable with non-empty text or contentDesc
+    const aText = Boolean((a.text && a.text.trim()) || (a.contentDesc && a.contentDesc.trim()));
+    const bText = Boolean((b.text && b.text.trim()) || (b.contentDesc && b.contentDesc.trim()));
+    const aActionable = a.clickable && aText;
+    const bActionable = b.clickable && bText;
+    if (aActionable && !bActionable) return -1;
+    if (!aActionable && bActionable) return 1;
+
+    // 3. Distance to screen center
+    const rectA = parseBoundsRect(a.bounds);
+    const rectB = parseBoundsRect(b.bounds);
+    if (rectA && rectB) {
+      const distA = Math.hypot((rectA.x1 + rectA.x2) / 2 - centerX, (rectA.y1 + rectA.y2) / 2 - centerY);
+      const distB = Math.hypot((rectB.x1 + rectB.x2) / 2 - centerX, (rectB.y1 + rectB.y2) / 2 - centerY);
+      if (Math.abs(distA - distB) > 10) {
+        return distA - distB;
+      }
+    }
+
+    return (a.index ?? 0) - (b.index ?? 0);
+  });
+
+  return sorted.map((el, idx) => ({
+    ...el,
+    index: idx,
+    ref: `@${idx + 1}`,
+  }));
+}
+
 export function formatCompactSnapshot(
   elements: ActionElement[],
   packageName?: string,
   fingerprint?: string,
-  changed?: boolean
+  changed?: boolean,
+  totalCount?: number
 ): string {
   let header = `[App: ${packageName || "active"}`;
   if (changed !== undefined) {
@@ -168,6 +266,10 @@ export function formatCompactSnapshot(
     return `[${ref}] ${role}${labelStr}${stateStr}`;
   });
 
+  if (totalCount !== undefined && totalCount > elements.length) {
+    lines.push(`... (${totalCount - elements.length} more elements truncated, use --limit to expand)`);
+  }
+
   return [header, ...lines].join("\n");
 }
 
@@ -181,9 +283,20 @@ function decodeXmlEntities(str: string): string {
     .replace(/&#39;/g, "'");
 }
 
+const ATTR_REGEX_CACHE = new Map<string, RegExp>();
+function getAttrRegex(key: string): RegExp {
+  let re = ATTR_REGEX_CACHE.get(key);
+  if (!re) {
+    re = new RegExp(`${key}="([^"]*)"`);
+    ATTR_REGEX_CACHE.set(key, re);
+  }
+  return re;
+}
+
 export function parseXmlDump(
   xmlContent: string,
-  includeSystemBars: boolean = false
+  includeSystemBars: boolean = false,
+  dedupe: boolean = true
 ): ActionElement[] {
   const elements: ActionElement[] = [];
   if (!xmlContent) return elements;
@@ -196,7 +309,7 @@ export function parseXmlDump(
   while ((match = nodeRegex.exec(xmlContent)) !== null) {
     const attrStr = match[1];
     const getAttr = (key: string) => {
-      const m = attrStr.match(new RegExp(`${key}="([^"]*)"`));
+      const m = attrStr.match(getAttrRegex(key));
       return m ? decodeXmlEntities(m[1]) : "";
     };
 
@@ -252,6 +365,10 @@ export function parseXmlDump(
       focused,
       visible_to_selector_engine: true,
     });
+  }
+
+  if (!dedupe) {
+    return elements;
   }
 
   return deduplicateAndFilterElements(elements);
@@ -320,6 +437,7 @@ export const UI_DOMAIN: DomainSpec = {
       outputSchema: z.object({
         screen_fingerprint: z.string(),
         element_count: z.number(),
+        raw_count: z.number().optional(),
         snapshot: z.string(),
         handles: z.record(z.unknown()).optional(),
       }),
@@ -329,9 +447,11 @@ export const UI_DOMAIN: DomainSpec = {
           try {
             const daemonClient = new DaemonClient(ctx.serial);
             const daemonRes = await daemonClient.snapshot(args);
+            ctx.serial = daemonClient.serial || ctx.serial;
             return {
               screen_fingerprint: daemonRes.screen_fingerprint,
               element_count: daemonRes.element_count,
+              raw_count: daemonRes.raw_count,
               snapshot: daemonRes.snapshot,
               ...(daemonRes.handles ? { handles: daemonRes.handles } : {}),
             };
@@ -350,17 +470,22 @@ export const UI_DOMAIN: DomainSpec = {
           packageName = info.currentPackageName;
         } catch {}
 
-        const xml = await client.dumpHierarchy();
-        let elements = parseXmlDump(xml, args.include_system_bars);
+        const xml = await client.dumpHierarchy(true);
+        const rawElements = parseXmlDump(xml, args.include_system_bars, false);
+        const rawCount = rawElements.length;
+        let elements = deduplicateAndFilterElements(rawElements);
+        const totalCount = elements.length;
         if (args.limit > 0 && elements.length > args.limit) {
-          elements = elements.slice(0, args.limit);
+          elements = sortByRelevance(elements).slice(0, args.limit);
         }
 
         const fp = computeScreenFingerprint(elements);
         const snapshotText = formatCompactSnapshot(
           elements,
           packageName,
-          args.fingerprint ? fp : undefined
+          args.fingerprint ? fp : undefined,
+          undefined,
+          totalCount
         );
 
         const handlesObj: Record<string, unknown> = {};
@@ -375,6 +500,7 @@ export const UI_DOMAIN: DomainSpec = {
         return {
           screen_fingerprint: fp,
           element_count: elements.length,
+          raw_count: rawCount,
           snapshot: snapshotText,
           ...(args.include_handles ? { handles: handlesObj } : {}),
         };
@@ -393,6 +519,7 @@ export const UI_DOMAIN: DomainSpec = {
       outputSchema: z.object({
         screen_fingerprint: z.string(),
         element_count: z.number(),
+        raw_count: z.number().optional(),
         elements: z.array(z.record(z.unknown())),
         raw_xml: z.string().optional(),
       }),
@@ -402,11 +529,14 @@ export const UI_DOMAIN: DomainSpec = {
         const client = await session.connect();
         ctx.serial = session.serial;
 
-        const xml = await client.dumpHierarchy();
-        let elements = parseXmlDump(xml, args.include_system_bars);
+        const xml = await client.dumpHierarchy(true);
+        const dedupe = args.filter !== "all";
+        const rawElements = parseXmlDump(xml, args.include_system_bars, false);
+        const rawCount = rawElements.length;
+        let elements = dedupe ? deduplicateAndFilterElements(rawElements) : rawElements;
 
         if (args.limit > 0 && elements.length > args.limit) {
-          elements = elements.slice(0, args.limit);
+          elements = sortByRelevance(elements).slice(0, args.limit);
         }
 
         const fingerprint = computeScreenFingerprint(elements);
@@ -414,6 +544,7 @@ export const UI_DOMAIN: DomainSpec = {
         return {
           screen_fingerprint: fingerprint,
           element_count: elements.length,
+          raw_count: rawCount,
           elements: elements as unknown as Record<string, unknown>[],
           ...(args.raw ? { raw_xml: xml } : {}),
         };
@@ -425,6 +556,7 @@ export const UI_DOMAIN: DomainSpec = {
       description: "Tap visible UI element matching selector or bounds coordinates",
       inputSchema: z.object({
         ref: z.string().optional().describe("Element handle from ui.snapshot (e.g. @1, @2)"),
+        pos: z.string().optional().describe("Direct tap coordinates 'X,Y' (bypasses selector resolution)"),
         text: z.string().optional(),
         text_contains: z.string().optional(),
         resource_id: z.string().optional(),
@@ -453,6 +585,7 @@ export const UI_DOMAIN: DomainSpec = {
           try {
             const daemonClient = new DaemonClient(ctx.serial);
             const daemonRes = await daemonClient.action("tap", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
             if (daemonRes.ok) {
               return daemonRes.result;
             }
@@ -465,23 +598,44 @@ export const UI_DOMAIN: DomainSpec = {
         const client = await session.connect();
         ctx.serial = session.serial;
 
-        const xml = await client.dumpHierarchy();
-        const elements = parseXmlDump(xml, true);
-        const preFingerprint = computeScreenFingerprint(elements);
+        let targetX = 0;
+        let targetY = 0;
+        let preFingerprint = "";
 
-        const query = parseSelectorArgs(args as Record<string, unknown>);
-        const matched = resolveSelector(elements, query);
+        if (args.pos) {
+          const parts = args.pos.replace(/\s+/g, "").split(",").map(Number);
+          if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) {
+            throw new UsageError(`Invalid --pos coordinates '${args.pos}'. Expected 'X,Y' format.`);
+          }
+          targetX = parts[0];
+          targetY = parts[1];
+          if (hasExpect) {
+            const xml = await client.dumpHierarchy(true);
+            const elements = parseXmlDump(xml, true);
+            preFingerprint = computeScreenFingerprint(elements);
+          }
+        } else {
+          const xml = await client.dumpHierarchy(true);
+          const rawElements = parseXmlDump(xml, true, false);
+          const elements = deduplicateAndFilterElements(rawElements);
+          preFingerprint = computeScreenFingerprint(elements);
 
-        if (matched.warnings.length > 0) {
-          for (const w of matched.warnings) ctx.warn(w);
+          const query = parseSelectorArgs(args as Record<string, unknown>);
+          const matched = resolveSelector(elements, query, false, rawElements);
+
+          if (matched.warnings.length > 0) {
+            for (const w of matched.warnings) ctx.warn(w);
+          }
+          targetX = matched.centerX;
+          targetY = matched.centerY;
         }
 
-        await client.click(matched.centerX, matched.centerY);
+        await client.click(targetX, targetY);
 
         const postcondition: Record<string, unknown> = {};
 
         if (hasExpect) {
-          const postXml = await client.dumpHierarchy();
+          const postXml = await client.dumpHierarchy(true);
           const postElements = parseXmlDump(postXml, true);
           const postFingerprint = computeScreenFingerprint(postElements);
           postcondition.screen_changed = preFingerprint !== postFingerprint;
@@ -494,8 +648,8 @@ export const UI_DOMAIN: DomainSpec = {
 
         return {
           tapped: true,
-          x: matched.centerX,
-          y: matched.centerY,
+          x: targetX,
+          y: targetY,
           ...(hasExpect ? { postcondition } : {}),
         };
       },
@@ -505,6 +659,7 @@ export const UI_DOMAIN: DomainSpec = {
       domain: "ui",
       description: "Long-press one visible UI element matched by selector",
       inputSchema: z.object({
+        ref: z.string().optional().describe("Element handle from ui.snapshot (e.g. @1, @2)"),
         text: z.string().optional(),
         text_contains: z.string().optional(),
         resource_id: z.string().optional(),
@@ -515,6 +670,7 @@ export const UI_DOMAIN: DomainSpec = {
         expect_desc_contains: z.string().optional(),
         expect_text_contains: z.string().optional(),
         expect_element_absent: z.boolean().optional(),
+        use_daemon: z.boolean().optional().default(true),
       }),
       outputSchema: z.object({
         duration: z.number(),
@@ -527,16 +683,28 @@ export const UI_DOMAIN: DomainSpec = {
         schema: z.object({ postcondition: z.record(z.unknown()) }),
       },
       handler: async (ctx, args) => {
+        if (args.use_daemon) {
+          try {
+            const daemonClient = new DaemonClient(ctx.serial);
+            const daemonRes = await daemonClient.action("long_press", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
+            if (daemonRes.ok) return daemonRes.result;
+          } catch (e: any) {
+            ctx.warn(`Daemon long_press action failed, falling back to direct RPC: ${e.message}`);
+          }
+        }
+
         const session = new DeviceSession(ctx.serial, ctx.timeout);
         const client = await session.connect();
         ctx.serial = session.serial;
 
-        const xml = await client.dumpHierarchy();
-        const elements = parseXmlDump(xml, true);
+        const xml = await client.dumpHierarchy(true);
+        const rawElements = parseXmlDump(xml, true, false);
+        const elements = deduplicateAndFilterElements(rawElements);
         const preFingerprint = computeScreenFingerprint(elements);
 
         const query = parseSelectorArgs(args as Record<string, unknown>);
-        const matched = resolveSelector(elements, query);
+        const matched = resolveSelector(elements, query, false, rawElements);
 
         if (matched.warnings.length > 0) {
           for (const w of matched.warnings) ctx.warn(w);
@@ -545,7 +713,7 @@ export const UI_DOMAIN: DomainSpec = {
         const duration = args.duration ?? 1.0;
         await client.longClick(matched.centerX, matched.centerY, duration);
 
-        const postXml = await client.dumpHierarchy();
+        const postXml = await client.dumpHierarchy(true);
         const postElements = parseXmlDump(postXml, true);
         const postFingerprint = computeScreenFingerprint(postElements);
 
@@ -576,6 +744,7 @@ export const UI_DOMAIN: DomainSpec = {
       inputSchema: z.object({
         text: z.string().describe("Text string to input"),
         clear_first: z.boolean().optional().default(false),
+        use_daemon: z.boolean().optional().default(true),
       }),
       outputSchema: z.object({
         text: z.string(),
@@ -588,6 +757,16 @@ export const UI_DOMAIN: DomainSpec = {
         schema: z.object({ success: z.literal(true) }),
       },
       handler: async (ctx, args) => {
+        if (args.use_daemon) {
+          try {
+            const daemonClient = new DaemonClient(ctx.serial);
+            const daemonRes = await daemonClient.action("input", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
+            if (daemonRes.ok) return daemonRes.result;
+          } catch (e: any) {
+            ctx.warn(`Daemon input action failed, falling back to direct RPC: ${e.message}`);
+          }
+        }
         const session = new DeviceSession(ctx.serial, ctx.timeout);
         const client = await session.connect();
         ctx.serial = session.serial;
@@ -618,6 +797,7 @@ export const UI_DOMAIN: DomainSpec = {
         to_y: z.number().optional(),
         duration: z.number().optional().default(0.2),
         duration_steps: z.number().optional().default(20),
+        use_daemon: z.boolean().optional().default(true),
       }),
       outputSchema: z.object({
         swiped: z.boolean(),
@@ -631,6 +811,17 @@ export const UI_DOMAIN: DomainSpec = {
         schema: z.object({ swiped: z.literal(true) }),
       },
       handler: async (ctx, args) => {
+        if (args.use_daemon) {
+          try {
+            const daemonClient = new DaemonClient(ctx.serial);
+            const daemonRes = await daemonClient.action("swipe", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
+            if (daemonRes.ok) return daemonRes.result;
+          } catch (e: any) {
+            ctx.warn(`Daemon swipe action failed, falling back to direct RPC: ${e.message}`);
+          }
+        }
+
         const session = new DeviceSession(ctx.serial, ctx.timeout);
         const client = await session.connect();
         ctx.serial = session.serial;
@@ -672,6 +863,7 @@ export const UI_DOMAIN: DomainSpec = {
       inputSchema: z.object({
         direction: z.enum(["down", "up", "left", "right"]).optional().default("down"),
         duration: z.number().optional().default(0.3),
+        use_daemon: z.boolean().optional().default(true),
       }),
       outputSchema: z.object({
         swiped: z.boolean(),
@@ -683,6 +875,17 @@ export const UI_DOMAIN: DomainSpec = {
         schema: z.object({ swiped: z.literal(true) }),
       },
       handler: async (ctx, args) => {
+        if (args.use_daemon) {
+          try {
+            const daemonClient = new DaemonClient(ctx.serial);
+            const daemonRes = await daemonClient.action("scroll", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
+            if (daemonRes.ok) return daemonRes.result;
+          } catch (e: any) {
+            ctx.warn(`Daemon scroll action failed, falling back to direct RPC: ${e.message}`);
+          }
+        }
+
         const session = new DeviceSession(ctx.serial, ctx.timeout);
         const client = await session.connect();
         ctx.serial = session.serial;
@@ -723,12 +926,14 @@ export const UI_DOMAIN: DomainSpec = {
       domain: "ui",
       description: "Macro to focus input field (via selector) and type text in one step",
       inputSchema: z.object({
+        ref: z.string().optional().describe("Element handle from ui.snapshot (e.g. @1, @2)"),
         text: z.string().describe("Text to type"),
         text_contains: z.string().optional(),
         resource_id: z.string().optional(),
         description: z.string().optional(),
         desc_contains: z.string().optional(),
         bounds: z.string().optional(),
+        use_daemon: z.boolean().optional().default(true),
       }),
       outputSchema: z.object({
         text_typed: z.string(),
@@ -740,16 +945,28 @@ export const UI_DOMAIN: DomainSpec = {
         schema: z.object({ text_typed: z.string() }),
       },
       handler: async (ctx, args) => {
+        if (args.use_daemon) {
+          try {
+            const daemonClient = new DaemonClient(ctx.serial);
+            const daemonRes = await daemonClient.action("type", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
+            if (daemonRes.ok) return daemonRes.result;
+          } catch (e: any) {
+            ctx.warn(`Daemon type action failed, falling back to direct RPC: ${e.message}`);
+          }
+        }
+
         const session = new DeviceSession(ctx.serial, ctx.timeout);
         const client = await session.connect();
         ctx.serial = session.serial;
 
-        const hasSelector = Boolean(args.text_contains || args.resource_id || args.description || args.desc_contains || args.bounds);
+        const hasSelector = Boolean(args.ref || args.text_contains || args.resource_id || args.description || args.desc_contains || args.bounds);
         if (hasSelector) {
-          const xml = await client.dumpHierarchy();
-          const elements = parseXmlDump(xml, true);
+          const xml = await client.dumpHierarchy(true);
+          const rawElements = parseXmlDump(xml, true, false);
+          const elements = deduplicateAndFilterElements(rawElements);
           const query = parseSelectorArgs(args as Record<string, unknown>);
-          const matched = resolveSelector(elements, query);
+          const matched = resolveSelector(elements, query, false, rawElements);
 
           if (matched.warnings.length > 0) {
             for (const w of matched.warnings) ctx.warn(w);
@@ -760,7 +977,7 @@ export const UI_DOMAIN: DomainSpec = {
 
         await client.setInputText(args.text);
 
-        const postXml = await client.dumpHierarchy();
+        const postXml = await client.dumpHierarchy(true);
         const postElements = parseXmlDump(postXml);
         const fingerprint = computeScreenFingerprint(postElements);
 
@@ -777,6 +994,7 @@ export const UI_DOMAIN: DomainSpec = {
       description: "Press hardware key or navigation key (back, home, enter, etc.)",
       inputSchema: z.object({
         key: z.string().describe("Key name (e.g. back, home, enter, delete, volume_up)"),
+        use_daemon: z.boolean().optional().default(true),
       }),
       outputSchema: z.object({
         key: z.string(),
@@ -788,13 +1006,24 @@ export const UI_DOMAIN: DomainSpec = {
         schema: z.object({ pressed: z.literal(true) }),
       },
       handler: async (ctx, args) => {
+        if (args.use_daemon) {
+          try {
+            const daemonClient = new DaemonClient(ctx.serial);
+            const daemonRes = await daemonClient.action("press", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
+            if (daemonRes.ok) return daemonRes.result;
+          } catch (e: any) {
+            ctx.warn(`Daemon press action failed, falling back to direct RPC: ${e.message}`);
+          }
+        }
+
         const session = new DeviceSession(ctx.serial, ctx.timeout);
         const client = await session.connect();
         ctx.serial = session.serial;
 
         await client.pressKey(args.key.toLowerCase());
 
-        const postXml = await client.dumpHierarchy();
+        const postXml = await client.dumpHierarchy(true);
         const postElements = parseXmlDump(postXml);
         const fingerprint = computeScreenFingerprint(postElements);
 
@@ -810,6 +1039,7 @@ export const UI_DOMAIN: DomainSpec = {
       domain: "ui",
       description: "Wait for an element matching selector to become present or absent",
       inputSchema: z.object({
+        ref: z.string().optional().describe("Element handle from ui.snapshot (e.g. @1, @2)"),
         text: z.string().optional(),
         text_contains: z.string().optional(),
         resource_id: z.string().optional(),
@@ -819,6 +1049,7 @@ export const UI_DOMAIN: DomainSpec = {
         timeout: z.number().optional().default(10),
         timeout_seconds: z.number().optional().default(10),
         absent: z.boolean().optional().default(false),
+        use_daemon: z.boolean().optional().default(true),
       }),
       outputSchema: z.object({
         waited_seconds: z.number(),
@@ -828,6 +1059,17 @@ export const UI_DOMAIN: DomainSpec = {
       }),
       safety: "read",
       handler: async (ctx, args) => {
+        if (args.use_daemon) {
+          try {
+            const daemonClient = new DaemonClient(ctx.serial);
+            const daemonRes = await daemonClient.action("wait", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
+            if (daemonRes.ok) return daemonRes.result;
+          } catch (e: any) {
+            ctx.warn(`Daemon wait action failed, falling back to direct RPC: ${e.message}`);
+          }
+        }
+
         const session = new DeviceSession(ctx.serial, ctx.timeout);
         const client = await session.connect();
         ctx.serial = session.serial;
@@ -839,11 +1081,13 @@ export const UI_DOMAIN: DomainSpec = {
         const startTime = Date.now();
         const deadline = startTime + timeoutSec * 1000;
 
+        let pollInterval = 100;
         while (Date.now() < deadline) {
           try {
-            const xml = await client.dumpHierarchy();
-            const elements = parseXmlDump(xml, true);
-            const matched = resolveSelector(elements, query);
+            const xml = await client.dumpHierarchy(true);
+            const rawElements = parseXmlDump(xml, true, false);
+            const elements = deduplicateAndFilterElements(rawElements);
+            const matched = resolveSelector(elements, query, false, rawElements);
 
             if (!absent) {
               const duration = Number(((Date.now() - startTime) / 1000).toFixed(2));
@@ -865,7 +1109,8 @@ export const UI_DOMAIN: DomainSpec = {
               };
             }
           }
-          await new Promise((r) => setTimeout(r, 500));
+          await new Promise((r) => setTimeout(r, pollInterval));
+          pollInterval = Math.min(Math.round(pollInterval * 1.5), 800);
         }
 
         throw new TimeoutError(`Wait timed out after ${timeoutSec}s for selector matching ${JSON.stringify(query)}`);
@@ -876,6 +1121,7 @@ export const UI_DOMAIN: DomainSpec = {
       domain: "ui",
       description: "Scroll repeatedly until selector element is found or max scrolls reached",
       inputSchema: z.object({
+        ref: z.string().optional().describe("Element handle from ui.snapshot (e.g. @1, @2)"),
         text: z.string().optional(),
         text_contains: z.string().optional(),
         resource_id: z.string().optional(),
@@ -885,6 +1131,7 @@ export const UI_DOMAIN: DomainSpec = {
         scroll_direction: z.enum(["down", "up", "left", "right"]).optional().default("down"),
         max_scrolls: z.number().int().max(30).optional().default(10),
         scroll_duration: z.number().optional().default(0.3),
+        use_daemon: z.boolean().optional().default(true),
       }),
       outputSchema: z.object({
         found: z.boolean(),
@@ -894,6 +1141,17 @@ export const UI_DOMAIN: DomainSpec = {
       }),
       safety: "read",
       handler: async (ctx, args) => {
+        if (args.use_daemon) {
+          try {
+            const daemonClient = new DaemonClient(ctx.serial);
+            const daemonRes = await daemonClient.action("find", args);
+            ctx.serial = daemonClient.serial || ctx.serial;
+            if (daemonRes.ok) return daemonRes.result;
+          } catch (e: any) {
+            ctx.warn(`Daemon find action failed, falling back to direct RPC: ${e.message}`);
+          }
+        }
+
         const session = new DeviceSession(ctx.serial, ctx.timeout);
         const client = await session.connect();
         ctx.serial = session.serial;
@@ -910,12 +1168,13 @@ export const UI_DOMAIN: DomainSpec = {
         let scrollsPerformed = 0;
 
         while (true) {
-          const xml = await client.dumpHierarchy();
-          const elements = parseXmlDump(xml);
+          const xml = await client.dumpHierarchy(true);
+          const rawElements = parseXmlDump(xml, false, false);
+          const elements = deduplicateAndFilterElements(rawElements);
           const fingerprint = computeScreenFingerprint(elements);
 
           try {
-            const matched = resolveSelector(elements, query);
+            const matched = resolveSelector(elements, query, false, rawElements);
             return {
               found: true,
               element: matched.element as unknown as Record<string, unknown>,

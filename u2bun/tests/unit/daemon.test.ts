@@ -97,4 +97,34 @@ describe("u2bun Agent-Browser Parity & Minimal Output", () => {
       console.log = originalLog;
     }
   });
+
+  test("preserves distinct child buttons and views inside large feed containers", () => {
+    const feedXml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.facebook.katana" bounds="[0,0][1080,2400]">
+    <node index="0" text="" resource-id="com.facebook.katana:id/feed_card" class="android.view.ViewGroup" package="com.facebook.katana" bounds="[0,200][1080,1800]" clickable="true">
+      <node index="0" text="Post title from user" resource-id="" class="android.widget.TextView" package="com.facebook.katana" bounds="[50,220][800,300]" />
+      <node index="1" text="Like" resource-id="com.facebook.katana:id/like_btn" class="android.widget.Button" package="com.facebook.katana" bounds="[50,1700][200,1780]" clickable="true" />
+      <node index="2" text="Comment" resource-id="com.facebook.katana:id/comment_btn" class="android.widget.Button" package="com.facebook.katana" bounds="[300,1700][500,1780]" clickable="true" />
+      <node index="3" text="Share" resource-id="com.facebook.katana:id/share_btn" class="android.widget.Button" package="com.facebook.katana" bounds="[600,1700][800,1780]" clickable="true" />
+    </node>
+  </node>
+</hierarchy>`;
+
+    const elements = parseXmlDump(feedXml);
+    // Should preserve all 4 child text/button elements without collapsing them
+    expect(elements.length).toBe(4);
+    const texts = elements.map((e) => e.text);
+    expect(texts).toContain("Post title from user");
+    expect(texts).toContain("Like");
+    expect(texts).toContain("Comment");
+    expect(texts).toContain("Share");
+  });
+
+  test("getDaemonConfigPath safely handles undefined and wifi serials", async () => {
+    const { getDaemonConfigPath } = await import("../../src/daemon/server");
+    expect(getDaemonConfigPath("192.168.1.19:5555")).toContain("192_168_1_19_5555");
+    expect(getDaemonConfigPath(undefined)).toContain("default");
+    expect(getDaemonConfigPath("")).toContain("default");
+  });
 });

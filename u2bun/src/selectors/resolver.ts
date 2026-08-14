@@ -10,6 +10,10 @@ export interface ResolvedElementMatch {
   warnings: string[];
 }
 
+export const OVERLAP_MERGE = 0.85;       // dedup: elements with same-size bounds collapse to one
+export const OVERLAP_MATCH = 0.80;       // selector --bounds: permissive fuzzy match
+export const OVERLAP_AMBIGUOUS = 0.90;   // disambiguation: all candidates overlap -> pick first
+
 export function rectOverlapRatio(
   r1: { x1: number; y1: number; x2: number; y2: number },
   r2: { x1: number; y1: number; x2: number; y2: number }
@@ -30,14 +34,8 @@ export function rectOverlapRatio(
   return intersectionArea / minArea;
 }
 
-export function resolveSelector(
-  elements: ActionElement[],
-  query: SelectorQuery,
-  strictSelector: boolean = false
-): ResolvedElementMatch {
-  const warnings: string[] = [];
-
-  let matches = elements.filter((e) => {
+function filterElementsMatchingQuery(elements: ActionElement[], query: SelectorQuery): ActionElement[] {
+  return elements.filter((e) => {
     if (query.ref) {
       const matchRef = e.ref === query.ref || `@${e.index + 1}` === query.ref || `${e.index + 1}` === query.ref;
       if (!matchRef) return false;
@@ -53,11 +51,30 @@ export function resolveSelector(
       const eRect = parseBoundsRect(e.bounds);
       if (!eRect) return false;
       const overlap = rectOverlapRatio(query.bounds, eRect);
-      if (overlap < 0.8) return false;
+      if (overlap < OVERLAP_MATCH) return false;
     }
 
     return true;
   });
+}
+
+export function resolveSelector(
+  elements: ActionElement[],
+  query: SelectorQuery,
+  strictSelector: boolean = false,
+  rawElements?: ActionElement[]
+): ResolvedElementMatch {
+  const warnings: string[] = [];
+
+  let matches = filterElementsMatchingQuery(elements, query);
+
+  if (matches.length === 0 && rawElements && rawElements.length > 0) {
+    const rawMatches = filterElementsMatchingQuery(rawElements, query);
+    if (rawMatches.length > 0) {
+      warnings.push("Selector matched element only in raw element tree (hidden by deduplication).");
+      matches = rawMatches;
+    }
+  }
 
   if (matches.length === 0) {
     const desc = JSON.stringify(query);
@@ -102,7 +119,7 @@ export function resolveSelector(
   if (firstRect) {
     const allOverlap = matches.every((m) => {
       const r = parseBoundsRect(m.bounds);
-      return r && rectOverlapRatio(firstRect, r) >= 0.9;
+      return r && rectOverlapRatio(firstRect, r) >= OVERLAP_AMBIGUOUS;
     });
     if (allOverlap) {
       const target = matches[0];
