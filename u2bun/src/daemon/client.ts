@@ -56,6 +56,7 @@ export class DaemonClient {
     const child = spawn("bun", ["run", serverScript, "--serial", this.serial], {
       detached: true,
       stdio: "ignore",
+      windowsHide: true,
       env: process.env,
     });
     child.unref();
