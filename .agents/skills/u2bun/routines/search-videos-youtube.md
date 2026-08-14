@@ -2,21 +2,26 @@
 
 ## Context
 - App package / Activity where this starts: `com.google.android.youtube` (home feed)
-- Precondition: YouTube is open on the home screen (bottom nav visible: Inicio/Shorts/Crear/Suscripciones/Tú).
+- Precondition: device unlocked and on the launcher home screen.
 
 ## Steps
 inside u2bun (workdir: `u2bun/`)
 
-1. `bun run src/index.ts --serial da0f5e72 app start --package com.google.android.youtube --json`
-2. `bun run src/index.ts --serial da0f5e72 ui tap --ref @6 --json`  (top-right search ImageView, content-desc "Buscar")
-3. `bun run src/index.ts --serial da0f5e72 ui input --text "<query>" --json`  (EditText is auto-focused)
-4. `bun run src/index.ts --serial da0f5e72 ui press --key enter --json`
-5. `bun run src/index.ts --serial da0f5e72 ui snapshot --json`  → results under `com.google.android.youtube:id/results`
+1. Launch YouTube by tapping the launcher "YouTube" icon, then confirm with `ui snapshot`.
+   NOTE: `app start --package com.google.android.youtube` returns `APP_NOT_FOUND` even though the
+   package appears in `app list`; launch via the launcher icon instead.
+2. `bun run src/index.ts --serial <SERIAL> ui snapshot --json`  → confirm home feed (bottom nav: Inicio/Shorts/Crear/Suscripciones/Tú).
+3. `bun run src/index.ts --serial <SERIAL> ui tap --text "Buscar" --json`  → opens search screen (search EditText auto-focused)
+4. `bun run src/index.ts --serial <SERIAL> ui input --text "<query>" --json`
+5. `bun run src/index.ts --serial <SERIAL> ui press --key enter --json`
+6. `bun run src/index.ts --serial <SERIAL> ui snapshot --json`  → results list
 
 ## Postcondition
-- Results RecyclerView shows video cards with content-desc containing "<title>, <channel> - <N> visualizaciones - <time> - reproducir (Short|vídeo)".
+- Results show the channel card and video cards with content-desc containing "<title> - <channel> - <N> visualizaciones - <time> - ver vídeo".
 
 ## Known Pitfalls
-- The search button has empty `text` and `resourceId="menu_item_view"`; its content-desc is "Buscar". Tap it by ref (top-right `@6`) — semantic `--text "Buscar"` won't match.
-- After tapping search, the `EditText` ("Buscar en YouTube", `search_edit_text`) is auto-focused, so `ui input` types directly into it without a separate tap.
+- `app start --package com.google.android.youtube` returns `APP_NOT_FOUND` despite the package being listed in `app list`; tap the launcher icon to open it.
+- The search button (top-right) matched by text "Buscar" on the current device; re-snapshot before tapping by ref if the handle shifts.
+- After tapping search, the `EditText` ("Buscar en YouTube") is auto-focused, so `ui input` types directly into it without a separate tap.
 - `ui input` uses clipboard+paste internally, so accented/special chars type correctly.
+- Device serial: `192.168.1.19:5555` (WiFi) — the old `da0f5e72` (USB) no longer applies.

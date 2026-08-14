@@ -119,20 +119,16 @@ Run everything as `bun run src/index.ts [--serial <SERIAL>] <domain> <command> [
 
 ### 1.4 Accented / non-ASCII text input
 
-`ui input` uses `setClipboard` + `pasteClipboard` (uiautomator2 RPC), which **corrupts non-ASCII chars** (`í` → `��`). For accented text (e.g. Spanish), use the AdbKeyboard IME broadcast instead:
+`ui input` **automatically** detects non-ASCII text and routes it through the AdbKeyboard IME broadcast (which preserves UTF-8). The response reports `input_method: "adb_keyboard"` (vs `"clipboard"` for plain ASCII).
 
-```
-# 1. Focus the field first (tap it). Without focus, ADB_KEYBOARD_CLEAR_TEXT fails with "null object reference".
-# 2. Type UTF-8 text as base64:
-adb -s <SERIAL> shell am broadcast -a ADB_KEYBOARD_INPUT_TEXT --es text <base64-of-utf8-text>
-# 3. Hide the IME:
-adb -s <SERIAL> shell am broadcast -a ADB_KEYBOARD_HIDE
-```
-
-- The IME is `com.github.uiautomator/.AdbKeyboard`. It responds to **`ADB_KEYBOARD_INPUT_TEXT`** (extra `text`, base64-encoded) — NOT `ADB_INPUT_TEXT`/`ADB_INPUT_B64` (the old senzhk ADBKeyBoard actions, which are enqueued but never dispatched).
-- Success signal: broadcast returns `result=-1`.
-- Clear with `ADB_KEYBOARD_CLEAR_TEXT` (only works while the field is focused).
-- Verify no mojibake via raw dump: assert `'\ufffd' not in raw_xml`.
+- The underlying `setClipboard` + `pasteClipboard` RPC path **corrupts non-ASCII chars** (`í` → `��`), so never force plain-ASCII clipboard for accented text.
+- The IME is `com.github.uiautomator/.AdbKeyboard` and must be the active input method. It responds to **`ADB_KEYBOARD_INPUT_TEXT`** (extra `text`, base64-encoded) — NOT `ADB_INPUT_TEXT`/`ADB_INPUT_B64` (the old senzhk ADBKeyBoard actions, which are enqueued but never dispatched).
+- Manual fallback (field MUST be focused first, else `ADB_KEYBOARD_CLEAR_TEXT` fails with "null object reference"):
+  ```
+  adb -s <SERIAL> shell am broadcast -a ADB_KEYBOARD_INPUT_TEXT --es text <base64-of-utf8-text>
+  adb -s <SERIAL> shell am broadcast -a ADB_KEYBOARD_HIDE
+  ```
+- Success signal: broadcast returns `result=-1`. Verify no mojibake via raw dump: assert `'\ufffd' not in raw_xml`.
 
 ---
 

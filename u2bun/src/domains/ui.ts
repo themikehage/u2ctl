@@ -750,6 +750,7 @@ export const UI_DOMAIN: DomainSpec = {
         text: z.string(),
         success: z.boolean(),
         text_typed: z.string().optional(),
+        input_method: z.string().optional(),
         postcondition: z.record(z.unknown()).optional(),
       }),
       safety: "interactive",
@@ -775,11 +776,12 @@ export const UI_DOMAIN: DomainSpec = {
           await client.clearInputText();
         }
 
-        await client.setInputText(args.text);
+        const inputMethod = await session.setInputText(args.text);
         return {
           text: args.text,
           text_typed: args.text,
           success: true,
+          input_method: inputMethod,
           postcondition: { satisfied: true },
         };
       },
@@ -975,7 +977,7 @@ export const UI_DOMAIN: DomainSpec = {
           await client.click(matched.centerX, matched.centerY);
         }
 
-        await client.setInputText(args.text);
+        await session.setInputText(args.text);
 
         const postXml = await client.dumpHierarchy(true);
         const postElements = parseXmlDump(postXml);

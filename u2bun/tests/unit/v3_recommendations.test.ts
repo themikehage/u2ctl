@@ -7,8 +7,8 @@ import type { ActionElement } from "../../src/models";
 import { SelectorNotFoundError, UsageError } from "../../src/errors";
 
 describe("v3 Recommendations & Robustness Fixes", () => {
-  test("BUILD_ID is updated to v3", () => {
-    expect(BUILD_ID).toBe("0.1.0-v3");
+  test("BUILD_ID is updated to v4", () => {
+    expect(BUILD_ID).toBe("0.1.0-v4");
   });
 
   test("Overlap constants are consolidated and exported", () => {

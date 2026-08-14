@@ -8,7 +8,7 @@ import { parseSelectorArgs } from "../selectors/parser";
 import { resolveSelector } from "../selectors/resolver";
 import { SelectorNotFoundError, UsageError } from "../errors";
 
-export const BUILD_ID = "0.1.0-v3";
+export const BUILD_ID = "0.1.0-v4";
 
 export function getDaemonConfigPath(serial?: string): string {
   const safeSerial = String(serial || "default").replace(/[^a-zA-Z0-9_\-]/g, "_");
@@ -291,13 +291,14 @@ export class DaemonServer {
               if (args.clear_first) {
                 await client.clearInputText();
               }
-              await client.setInputText(args.text);
+              const inputMethod = await session.setInputText(args.text);
               return Response.json({
                 ok: true,
                 result: {
                   text: args.text,
                   text_typed: args.text,
                   success: true,
+                  input_method: inputMethod,
                   postcondition: { satisfied: true },
                 },
               });
@@ -387,7 +388,7 @@ export class DaemonServer {
                 await client.click(matched.centerX, matched.centerY);
               }
 
-              await client.setInputText(args.text);
+              await session.setInputText(args.text);
 
               const postXml = await client.dumpHierarchy(true);
               const postElements = parseXmlDump(postXml);
