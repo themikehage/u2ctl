@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { DeviceSession } from "../runtime/device";
 import type { ActionElement } from "../models";
-import { parseXmlDump, computeScreenFingerprint, formatCompactSnapshot } from "../domains/ui";
+import { parseXmlDump, computeScreenFingerprint, formatCompactSnapshot, checkExpect } from "../domains/ui";
 import { parseSelectorArgs } from "../selectors/parser";
 import { resolveSelector } from "../selectors/resolver";
 
@@ -25,6 +25,7 @@ export class DaemonServer {
   private elements: ActionElement[] = [];
   private handles: Map<string, ActionElement> = new Map();
   private fingerprint: string = "";
+  private prevSnapshotLines: string[] = [];
   private server: ReturnType<typeof Bun.serve> | null = null;
 
   constructor(serial: string, port: number = 0) {
@@ -58,8 +59,14 @@ export class DaemonServer {
             const includeSystemBars = Boolean(body.include_system_bars);
             const session = await self.getSession();
             const client = session.client!;
+
+            let packageName: string | undefined = undefined;
+            try {
+              const info = await client.deviceInfo();
+              packageName = info.currentPackageName;
+            } catch {}
+
             const xml = await client.dumpHierarchy();
-            
             let rawElements = parseXmlDump(xml, includeSystemBars);
 
             if (body.limit && body.limit > 0 && rawElements.length > body.limit) {
@@ -74,8 +81,26 @@ export class DaemonServer {
               return item;
             });
 
-            self.fingerprint = computeScreenFingerprint(self.elements);
-            const snapshotText = formatCompactSnapshot(self.elements, undefined, self.fingerprint);
+            const newFingerprint = computeScreenFingerprint(self.elements);
+            const hasPrev = self.fingerprint !== "";
+            const changed = hasPrev ? self.fingerprint !== newFingerprint : undefined;
+            self.fingerprint = newFingerprint;
+
+            let snapshotText = formatCompactSnapshot(
+              self.elements,
+              packageName,
+              body.fingerprint ? self.fingerprint : undefined,
+              changed
+            );
+
+            if (body.diff && hasPrev && self.prevSnapshotLines.length > 0) {
+              const currentLines = snapshotText.split("\n");
+              const header = currentLines[0];
+              const prevSet = new Set(self.prevSnapshotLines.slice(1));
+              const changedLines = currentLines.slice(1).filter((line) => !prevSet.has(line));
+              snapshotText = [header, ...changedLines].join("\n");
+            }
+            self.prevSnapshotLines = snapshotText.split("\n");
 
             const handleObj: Record<string, unknown> = {};
             if (body.include_handles) {
@@ -118,7 +143,24 @@ export class DaemonServer {
                 matched = resolveSelector(self.elements, query);
               }
 
+              const preFingerprint = self.fingerprint;
               await client.click(matched.centerX, matched.centerY);
+
+              const hasExpect = Boolean(args.expect_desc_contains || args.expect_text_contains || args.expect_element_absent);
+              const postcondition: Record<string, unknown> = {};
+
+              if (hasExpect) {
+                const postXml = await client.dumpHierarchy();
+                const postElements = parseXmlDump(postXml, true);
+                const postFingerprint = computeScreenFingerprint(postElements);
+                self.fingerprint = postFingerprint;
+                postcondition.screen_changed = preFingerprint !== postFingerprint;
+                postcondition.screen_fingerprint = postFingerprint;
+
+                const [satisfied, matchedElem] = checkExpect(args, postElements);
+                postcondition.expect_satisfied = satisfied;
+                if (matchedElem) postcondition.matched_element = matchedElem;
+              }
 
               return Response.json({
                 ok: true,
@@ -126,7 +168,7 @@ export class DaemonServer {
                   tapped: true,
                   x: matched.centerX,
                   y: matched.centerY,
-                  element: matched.element,
+                  ...(hasExpect ? { postcondition } : {}),
                 },
               });
             }

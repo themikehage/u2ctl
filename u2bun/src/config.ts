@@ -5,7 +5,6 @@ import { homedir } from "node:os";
 export interface Config {
   serial?: string;
   timeout: number;
-  json: boolean;
   quiet: boolean;
   debug: boolean;
   strictSelector: boolean;
@@ -15,7 +14,6 @@ export interface Config {
 
 export const DEFAULT_CONFIG: Config = {
   timeout: 30,
-  json: false,
   quiet: false,
   debug: false,
   strictSelector: false,
@@ -43,7 +41,6 @@ export function loadConfigFile(): Partial<Config> {
     return {
       serial: parsed.serial || parsed.U2CTL_SERIAL,
       timeout: parsed.timeout ? Number(parsed.timeout) : undefined,
-      json: parsed.json === true || parsed.json === "1",
       quiet: parsed.quiet === true,
       debug: parsed.debug === true,
       strictSelector: parsed.strictSelector === true,
@@ -60,7 +57,6 @@ export function resolveConfig(cliFlags: Partial<Config>): Config {
 
   const envSerial = process.env.U2CTL_SERIAL || process.env.ANDROID_SERIAL;
   const envTimeout = process.env.U2CTL_TIMEOUT ? Number(process.env.U2CTL_TIMEOUT) : undefined;
-  const envJson = process.env.U2CTL_JSON === "1" || process.env.U2CTL_JSON === "true";
   const envStrict = process.env.U2CTL_STRICT_SELECTOR === "1" || process.env.U2CTL_STRICT_SELECTOR === "true";
   const envSafety = process.env.U2CTL_SAFETY as Config["safety"] | undefined;
   const envAdb = process.env.ADB_PATH;
@@ -68,7 +64,6 @@ export function resolveConfig(cliFlags: Partial<Config>): Config {
   return {
     serial: cliFlags.serial ?? envSerial ?? fileConfig.serial,
     timeout: cliFlags.timeout ?? envTimeout ?? fileConfig.timeout ?? DEFAULT_CONFIG.timeout,
-    json: cliFlags.json ?? (envJson || fileConfig.json || DEFAULT_CONFIG.json),
     quiet: cliFlags.quiet ?? (fileConfig.quiet || DEFAULT_CONFIG.quiet),
     debug: cliFlags.debug ?? (fileConfig.debug || DEFAULT_CONFIG.debug),
     strictSelector: cliFlags.strictSelector ?? (envStrict || fileConfig.strictSelector || DEFAULT_CONFIG.strictSelector),

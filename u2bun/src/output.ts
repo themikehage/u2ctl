@@ -57,15 +57,27 @@ export function formatErrorEnvelope(
 
 export function renderOutput(
   envelope: JsonEnvelope,
-  asJson: boolean,
   quiet: boolean = false
 ): void {
+  // Always emit warnings to stderr immediately so they are never lost
+  if (envelope.warnings && envelope.warnings.length > 0) {
+    for (const w of envelope.warnings) {
+      console.error(`Warning: ${w}`);
+    }
+  }
+
   if (quiet && envelope.ok) {
     return;
   }
 
   if (!envelope.ok && envelope.error) {
     console.error(`Error [${envelope.error.code}]: ${envelope.error.message}`);
+    if (envelope.error.hint) {
+      console.error(`hint: ${envelope.error.hint}`);
+    }
+    if (envelope.error.retryable !== undefined) {
+      console.error(`retryable: ${envelope.error.retryable}`);
+    }
     return;
   }
 
@@ -78,7 +90,7 @@ export function renderOutput(
       return;
     }
 
-    // 2. Query commands: app.current, app.list, device.list
+    // 2. Query commands: app.current, app.list, device.list, device.status/auto
     if (typeof res.package === "string" && typeof res.activity === "string" && !res.started && !res.stopped) {
       console.log(`${res.package}/${res.activity}`);
       return;
@@ -90,6 +102,10 @@ export function renderOutput(
     if (Array.isArray(res.devices)) {
       const lines = res.devices.map((d: any) => `${d.serial}\t${d.state}\t${d.model || ""}`.trim());
       console.log(lines.join("\n"));
+      return;
+    }
+    if (typeof res.serial === "string" && typeof res.state === "string") {
+      console.log(`${res.serial}\t${res.state}\t${res.model || ""}`.trim());
       return;
     }
 
@@ -113,11 +129,5 @@ export function renderOutput(
     console.log(JSON.stringify(res, null, 2));
   } else {
     console.log("ok");
-  }
-
-  if (envelope.warnings && envelope.warnings.length > 0) {
-    for (const w of envelope.warnings) {
-      console.error(`Warning: ${w}`);
-    }
   }
 }

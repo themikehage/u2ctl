@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { DomainSpec } from "../registry";
 import { selectTargetDevice, listAdbDevices, reconnectDevice, execAdb } from "../runtime/adb";
 import { DeviceSession } from "../runtime/device";
+import { DeviceNoneError, DeviceAmbiguousError } from "../errors";
 
 export const DEVICE_DOMAIN: DomainSpec = {
   name: "device",
@@ -11,7 +12,9 @@ export const DEVICE_DOMAIN: DomainSpec = {
       name: "device.list",
       domain: "device",
       description: "List all connected ADB devices with status and transport type",
-      inputSchema: z.object({}),
+      inputSchema: z.object({
+        online: z.boolean().optional().default(false),
+      }),
       outputSchema: z.object({
         devices: z.array(
           z.object({
@@ -24,9 +27,39 @@ export const DEVICE_DOMAIN: DomainSpec = {
         ),
       }),
       safety: "read",
-      handler: async (ctx) => {
-        const devices = await listAdbDevices();
+      handler: async (_, args) => {
+        let devices = await listAdbDevices();
+        if (args.online) {
+          devices = devices.filter((d) => d.state === "device");
+        }
         return { devices };
+      },
+    },
+    {
+      name: "device.auto",
+      domain: "device",
+      description: "Auto-detect and resolve the single online Android device serial",
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        serial: z.string(),
+        model: z.string(),
+        state: z.string(),
+      }),
+      safety: "read",
+      handler: async () => {
+        const devices = await listAdbDevices();
+        const online = devices.filter((d) => d.state === "device");
+        if (online.length === 0) {
+          throw new DeviceNoneError();
+        }
+        if (online.length > 1) {
+          throw new DeviceAmbiguousError(online.map((d) => d.serial).join(", "));
+        }
+        return {
+          serial: online[0].serial,
+          model: online[0].model,
+          state: online[0].state,
+        };
       },
     },
     {

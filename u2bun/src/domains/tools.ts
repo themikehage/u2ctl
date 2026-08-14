@@ -2,6 +2,54 @@ import { z } from "zod";
 import type { DomainSpec } from "../registry";
 import { registry } from "../registry";
 
+function extractZodParameters(schema: z.ZodTypeAny): {
+  parameters: Record<string, { type: string; description?: string; optional: boolean; default?: unknown }>;
+  required: string[];
+} {
+  const parameters: Record<string, { type: string; description?: string; optional: boolean; default?: unknown }> = {};
+  const required: string[] = [];
+
+  if (schema instanceof z.ZodObject) {
+    for (const [key, field] of Object.entries(schema.shape)) {
+      let fieldSchema: any = field;
+      let isOpt = false;
+      let defaultVal: unknown = undefined;
+
+      if (fieldSchema instanceof z.ZodDefault) {
+        defaultVal = fieldSchema._def.defaultValue();
+        fieldSchema = fieldSchema._def.innerType;
+        isOpt = true;
+      }
+      if (fieldSchema instanceof z.ZodOptional) {
+        fieldSchema = fieldSchema._def.innerType;
+        isOpt = true;
+      }
+
+      let typeName = "string";
+      if (fieldSchema instanceof z.ZodNumber) typeName = "number";
+      else if (fieldSchema instanceof z.ZodBoolean) typeName = "boolean";
+      else if (fieldSchema instanceof z.ZodArray) typeName = "array";
+      else if (fieldSchema instanceof z.ZodEnum) typeName = `enum(${fieldSchema._def.values.join("|")})`;
+      else if (fieldSchema instanceof z.ZodRecord) typeName = "object";
+
+      const description = fieldSchema.description || (field as any).description;
+
+      if (!isOpt) {
+        required.push(key);
+      }
+
+      parameters[key] = {
+        type: typeName,
+        ...(description ? { description } : {}),
+        optional: isOpt,
+        ...(defaultVal !== undefined ? { default: defaultVal } : {}),
+      };
+    }
+  }
+
+  return { parameters, required };
+}
+
 export const TOOLS_DOMAIN: DomainSpec = {
   name: "tools",
   description: "Capability catalog introspection and schema export for external agents",
@@ -47,12 +95,15 @@ export const TOOLS_DOMAIN: DomainSpec = {
         const target = args.name;
         const tool = registry.getTool(target);
         if (tool) {
+          const { parameters, required } = extractZodParameters(tool.inputSchema);
           return {
             name: tool.name,
             domain: tool.domain,
             description: tool.description,
             safety: tool.safety || "read",
             idempotent: tool.idempotent ?? true,
+            parameters,
+            required,
             requires: tool.requires || [],
           };
         }
@@ -82,24 +133,43 @@ export const TOOLS_DOMAIN: DomainSpec = {
         const tools = registry.listTools();
 
         if (args.format === "openai") {
-          const functions = tools.map((t) => ({
-            name: t.name.replace(/\./g, "_"),
-            description: t.description,
-            parameters: {
-              type: "object",
-              properties: {},
-            },
-          }));
+          const functions = tools.map((t) => {
+            const { parameters, required } = extractZodParameters(t.inputSchema);
+            const properties: Record<string, any> = {};
+            for (const [k, v] of Object.entries(parameters)) {
+              let pType = v.type;
+              if (pType.startsWith("enum")) pType = "string";
+              properties[k] = {
+                type: pType,
+                ...(v.description ? { description: v.description } : {}),
+              };
+            }
+
+            return {
+              name: t.name.replace(/\./g, "_"),
+              description: t.description,
+              parameters: {
+                type: "object",
+                properties,
+                ...(required.length > 0 ? { required } : {}),
+              },
+            };
+          });
           return { functions };
         }
 
-        const rawSpecs = tools.map((t) => ({
-          name: t.name,
-          domain: t.domain,
-          description: t.description,
-          safety: t.safety || "read",
-          idempotent: t.idempotent ?? true,
-        }));
+        const rawSpecs = tools.map((t) => {
+          const { parameters, required } = extractZodParameters(t.inputSchema);
+          return {
+            name: t.name,
+            domain: t.domain,
+            description: t.description,
+            safety: t.safety || "read",
+            idempotent: t.idempotent ?? true,
+            parameters,
+            required,
+          };
+        });
         return { capabilities: rawSpecs };
       },
     },

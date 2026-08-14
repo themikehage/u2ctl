@@ -46,8 +46,6 @@ export function parseArgs(rawArgs: string[]): {
       configFlags.timeout = Number(rawArgs[++i]);
     } else if (arg.startsWith("--timeout=")) {
       configFlags.timeout = Number(arg.split("=", 2)[1]);
-    } else if (arg === "--json") {
-      configFlags.json = true;
     } else if (arg === "--quiet") {
       configFlags.quiet = true;
     } else if (arg === "--debug") {
@@ -55,20 +53,20 @@ export function parseArgs(rawArgs: string[]): {
     } else if (arg === "--strict-selector") {
       configFlags.strictSelector = true;
     } else if (arg.startsWith("--no-")) {
-      const key = camelCase(arg.slice(5));
+      const key = toSnakeCase(arg.slice(5));
       toolArgs[key] = false;
     } else if (arg.startsWith("--")) {
       const param = arg.slice(2);
       if (param.includes("=")) {
         const [k, v] = param.split("=", 2);
-        toolArgs[camelCase(k)] = parseTypedValue(v);
+        toolArgs[toSnakeCase(k)] = parseTypedValue(v);
       } else {
         const next = rawArgs[i + 1];
         if (next !== undefined && !next.startsWith("-")) {
-          toolArgs[camelCase(param)] = parseTypedValue(next);
+          toolArgs[toSnakeCase(param)] = parseTypedValue(next);
           i++;
         } else {
-          toolArgs[camelCase(param)] = true;
+          toolArgs[toSnakeCase(param)] = true;
         }
       }
     } else {
@@ -89,8 +87,8 @@ export function parseArgs(rawArgs: string[]): {
   };
 }
 
-function camelCase(str: string): string {
-  return str.replace(/-([a-z])/g, (_, g) => g.toUpperCase());
+function toSnakeCase(str: string): string {
+  return str.replace(/-/g, "_");
 }
 
 function parseTypedValue(val: string): unknown {
@@ -104,7 +102,7 @@ export function printHelp(): void {
   console.log(`u2bun - Android UI Automator Control CLI (Bun rewrite)
 
 Usage:
-  u2bun [--serial SERIAL] [--timeout SECONDS] [--json] [--quiet] <domain> <command> [options]
+  u2bun [--serial SERIAL] [--timeout SECONDS] [--quiet] <domain> <command> [options]
 
 Domains & Commands:
 ${registry
@@ -119,7 +117,6 @@ ${registry
 Global Options:
   --serial SERIAL       Target device ADB serial
   --timeout SECONDS     Global timeout (default: 30)
-  --json                Emit output in machine-readable JSON envelope
   --quiet               Suppress diagnostic stderr output
   --strict-selector     Fail on ambiguous selector matches
   --help, -h            Show help message
@@ -149,7 +146,7 @@ export async function runCli(argv: string[]): Promise<number> {
   if (!tool) {
     const err = new UsageError(`Unknown command '${domainName} ${subName || ""}'. Use --help for available commands.`);
     const envelope = formatErrorEnvelope(toolName, err, config.serial);
-    renderOutput(envelope, config.json, config.quiet);
+    renderOutput(envelope, config.quiet);
     return err.exitCode;
   }
 
@@ -160,7 +157,7 @@ export async function runCli(argv: string[]): Promise<number> {
       `Tool '${tool.name}' requires safety level '${tool.safety}', but ceiling is locked to '${config.safety}'`
     );
     const envelope = formatErrorEnvelope(tool.name, err, config.serial);
-    renderOutput(envelope, config.json, config.quiet);
+    renderOutput(envelope, config.quiet);
     return err.exitCode;
   }
 
@@ -188,7 +185,7 @@ export async function runCli(argv: string[]): Promise<number> {
     await registry.verifyPostcondition(ctx, tool, validatedResult);
 
     const envelope = formatSuccessEnvelope(tool.name, ctx.serial, validatedResult, warnings);
-    renderOutput(envelope, config.json, config.quiet);
+    renderOutput(envelope, config.quiet);
     return 0;
   } catch (error: any) {
     let uError: U2Error;
@@ -201,7 +198,7 @@ export async function runCli(argv: string[]): Promise<number> {
     }
 
     const envelope = formatErrorEnvelope(tool.name, uError, ctx.serial, warnings);
-    renderOutput(envelope, config.json, config.quiet);
+    renderOutput(envelope, config.quiet);
     return uError.exitCode;
   }
 }

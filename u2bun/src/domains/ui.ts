@@ -59,11 +59,12 @@ const STRUCTURAL_CLASSES = new Set([
 
 export function getSemanticRole(el: ActionElement): string {
   const cls = el.className || "";
+  const resId = (el.resourceId || "").toLowerCase();
   const text = el.text || el.contentDesc || "";
   
   if (cls.endsWith("EditText")) return "Input";
   if (cls.endsWith("Switch") || cls.endsWith("CheckBox") || cls.endsWith("RadioButton")) return "Toggle";
-  if (cls.includes("Tab") || text.includes(" de ") || text.toLowerCase().includes("tab")) return "Tab";
+  if (cls.includes("Tab") || resId.includes("tab") || (text.length <= 20 && text.toLowerCase().includes("tab"))) return "Tab";
   if (cls.endsWith("Button") || cls.endsWith("ImageButton")) return "Button";
   if (cls.endsWith("TextView")) {
     return el.clickable ? "Button" : "Text";
@@ -145,13 +146,21 @@ export function deduplicateAndFilterElements(elements: ActionElement[]): ActionE
 export function formatCompactSnapshot(
   elements: ActionElement[],
   packageName?: string,
-  fingerprint?: string
+  fingerprint?: string,
+  changed?: boolean
 ): string {
-  const header = `[App: ${packageName || "active"}${fingerprint ? ` | fingerprint: ${fingerprint}` : ""}]`;
+  let header = `[App: ${packageName || "active"}`;
+  if (changed !== undefined) {
+    header += ` | changed: ${changed ? "yes" : "no"}`;
+  } else if (fingerprint) {
+    header += ` | fingerprint: ${fingerprint}`;
+  }
+  header += `]`;
+
   const lines = elements.map((e) => {
     const ref = e.ref || `@${e.index + 1}`;
     const role = getSemanticRole(e);
-    const label = e.text || e.contentDesc || e.resourceId || "";
+    const label = e.text || e.contentDesc || "";
     const labelStr = label ? ` "${label}"` : "";
     const stateFlags: string[] = [];
     if (e.focused) stateFlags.push("focused");
@@ -248,7 +257,7 @@ export function parseXmlDump(
   return deduplicateAndFilterElements(elements);
 }
 
-function checkExpect(
+export function checkExpect(
   args: Record<string, unknown>,
   postElements: ActionElement[]
 ): [boolean, Record<string, unknown> | null] {
@@ -305,6 +314,8 @@ export const UI_DOMAIN: DomainSpec = {
         include_system_bars: z.boolean().optional().default(false),
         include_handles: z.boolean().optional().default(false),
         use_daemon: z.boolean().optional().default(true),
+        diff: z.boolean().optional().default(false),
+        fingerprint: z.boolean().optional().default(false),
       }),
       outputSchema: z.object({
         screen_fingerprint: z.string(),
@@ -333,14 +344,24 @@ export const UI_DOMAIN: DomainSpec = {
         const client = await session.connect();
         ctx.serial = session.serial;
 
+        let packageName: string | undefined = undefined;
+        try {
+          const info = await client.deviceInfo();
+          packageName = info.currentPackageName;
+        } catch {}
+
         const xml = await client.dumpHierarchy();
         let elements = parseXmlDump(xml, args.include_system_bars);
         if (args.limit > 0 && elements.length > args.limit) {
           elements = elements.slice(0, args.limit);
         }
 
-        const fingerprint = computeScreenFingerprint(elements);
-        const snapshotText = formatCompactSnapshot(elements, undefined, fingerprint);
+        const fp = computeScreenFingerprint(elements);
+        const snapshotText = formatCompactSnapshot(
+          elements,
+          packageName,
+          args.fingerprint ? fp : undefined
+        );
 
         const handlesObj: Record<string, unknown> = {};
         if (args.include_handles) {
@@ -352,7 +373,7 @@ export const UI_DOMAIN: DomainSpec = {
         }
 
         return {
-          screen_fingerprint: fingerprint,
+          screen_fingerprint: fp,
           element_count: elements.length,
           snapshot: snapshotText,
           ...(args.include_handles ? { handles: handlesObj } : {}),
@@ -420,7 +441,6 @@ export const UI_DOMAIN: DomainSpec = {
         tapped: z.boolean(),
         x: z.number(),
         y: z.number(),
-        element: z.record(z.unknown()),
         postcondition: z.record(z.unknown()).optional(),
       }),
       safety: "interactive",
@@ -429,7 +449,7 @@ export const UI_DOMAIN: DomainSpec = {
       },
       handler: async (ctx, args) => {
         const hasExpect = Boolean(args.expect_desc_contains || args.expect_text_contains || args.expect_element_absent);
-        if (args.use_daemon && !hasExpect && args.ref) {
+        if (args.use_daemon) {
           try {
             const daemonClient = new DaemonClient(ctx.serial);
             const daemonRes = await daemonClient.action("tap", args);
@@ -476,7 +496,6 @@ export const UI_DOMAIN: DomainSpec = {
           tapped: true,
           x: matched.centerX,
           y: matched.centerY,
-          element: matched.element as unknown as Record<string, unknown>,
           ...(hasExpect ? { postcondition } : {}),
         };
       },
@@ -638,16 +657,11 @@ export const UI_DOMAIN: DomainSpec = {
         const steps = args.duration_steps ?? Math.round((args.duration ?? 0.2) * 100);
         await client.swipe(fx, fy, tx, ty, steps);
 
-        const postXml = await client.dumpHierarchy();
-        const postElements = parseXmlDump(postXml);
-        const fingerprint = computeScreenFingerprint(postElements);
-
         return {
           swiped: true,
           from: [fx, fy],
           to: [tx, ty],
           duration: args.duration ?? 0.2,
-          screen_fingerprint: fingerprint,
         };
       },
     },
@@ -662,7 +676,7 @@ export const UI_DOMAIN: DomainSpec = {
       outputSchema: z.object({
         swiped: z.boolean(),
         direction: z.string(),
-        screen_fingerprint: z.string(),
+        screen_fingerprint: z.string().optional(),
       }),
       safety: "interactive",
       expect: {
@@ -698,14 +712,9 @@ export const UI_DOMAIN: DomainSpec = {
         const steps = Math.round(duration * 100);
         await client.swipe(fx, fy, tx, ty, steps);
 
-        const postXml = await client.dumpHierarchy();
-        const postElements = parseXmlDump(postXml);
-        const fingerprint = computeScreenFingerprint(postElements);
-
         return {
           swiped: true,
           direction: dir,
-          screen_fingerprint: fingerprint,
         };
       },
     },

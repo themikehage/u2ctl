@@ -12,16 +12,31 @@ export class DaemonClient {
   }
 
   private async getActivePort(): Promise<number | null> {
+    if (this.port !== null) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${this.port}/ping`, { signal: AbortSignal.timeout(300) });
+        if (res.ok) {
+          const data: any = await res.json();
+          if (data.ok && data.serial === this.serial) {
+            return this.port;
+          }
+        }
+      } catch {
+        this.port = null;
+      }
+    }
+
     const configPath = getDaemonConfigPath(this.serial);
     if (!existsSync(configPath)) return null;
 
     try {
       const content = readFileSync(configPath, "utf-8");
       const info: DaemonInfo = JSON.parse(content);
-      const res = await fetch(`http://127.0.0.1:${info.port}/ping`, { signal: AbortSignal.timeout(1000) });
+      const res = await fetch(`http://127.0.0.1:${info.port}/ping`, { signal: AbortSignal.timeout(500) });
       if (res.ok) {
         const data: any = await res.json();
         if (data.ok && data.serial === this.serial) {
+          this.port = info.port;
           return info.port;
         }
       }
@@ -45,8 +60,8 @@ export class DaemonClient {
     });
     child.unref();
 
-    for (let i = 0; i < 20; i++) {
-      await new Promise((r) => setTimeout(r, 100));
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 50));
       port = await this.getActivePort();
       if (port !== null) {
         this.port = port;
@@ -61,7 +76,7 @@ export class DaemonClient {
     const port = await this.ensureDaemon();
     const res = await fetch(`http://127.0.0.1:${port}/snapshot`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Connection: "keep-alive" },
       body: JSON.stringify(args),
     });
     if (!res.ok) {
@@ -75,7 +90,7 @@ export class DaemonClient {
     const port = await this.ensureDaemon();
     const res = await fetch(`http://127.0.0.1:${port}/action`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Connection: "keep-alive" },
       body: JSON.stringify({ command, args }),
     });
     if (!res.ok) {
